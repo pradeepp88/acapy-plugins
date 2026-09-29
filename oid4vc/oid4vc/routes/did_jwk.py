@@ -3,7 +3,6 @@
 import json
 
 from acapy_agent.admin.request_context import AdminRequestContext
-from acapy_agent.askar.profile import AskarProfileSession
 from acapy_agent.messaging.models.openapi import OpenAPISchema
 from acapy_agent.wallet.base import BaseWallet
 from acapy_agent.wallet.did_info import DIDInfo
@@ -19,6 +18,7 @@ from aries_askar import Key, KeyAlg
 from marshmallow import fields
 from marshmallow.validate import OneOf
 
+from ..did_utils import askar_key_handle
 from ..jwk import DID_JWK
 
 
@@ -71,10 +71,9 @@ async def create_did_jwk(request: web.Request):
         if not key_type_instance:
             raise web.HTTPBadRequest(reason="Invalid key type")
 
-        assert isinstance(session, AskarProfileSession)
         key = Key.generate(KeyAlg(key_type_instance.key_type))
 
-        await session.handle.insert_key(
+        await askar_key_handle(session).insert_key(
             key.get_jwk_thumbprint(),
             key,
         )

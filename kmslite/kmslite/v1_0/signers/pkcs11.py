@@ -85,8 +85,21 @@ class PKCS11Signer:
         self._token = self._lib.get_token(token_label=token_label)
         self._pool: "asyncio.Queue[Any]" = asyncio.Queue(maxsize=pool_size)
         for _ in range(pool_size):
-            self._pool.put_nowait(self._token.open(user_pin=pin, rw=True))
+            self._pool.put_nowait(self._open_session(pin))
         LOGGER.info("PKCS11Signer: token=%r pool_size=%d", token_label, pool_size)
+
+    def _open_session(self, pin: str):
+        """Open a session, logging in only if the token isn't already.
+
+        PKCS#11 login state is per token per application, not per session, so
+        C_Login on the second and later sessions returns
+        CKR_USER_ALREADY_LOGGED_IN on strict implementations (SoftHSM2).
+        Those sessions inherit the existing login and need no PIN.
+        """
+        try:
+            return self._token.open(user_pin=pin, rw=True)
+        except pkcs11.exceptions.UserAlreadyLoggedIn:
+            return self._token.open(rw=True)
 
     @classmethod
     def from_config(

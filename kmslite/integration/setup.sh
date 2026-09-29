@@ -40,11 +40,45 @@ else
 fi
 
 echo "[2/3] Building native macOS PKCS#11 client library..."
-( cd "$SRC_DIR/build_macos" && make -s universal )
+
+# Some SDK/toolchain combinations don't match: `xcrun` may resolve to a
+# CommandLineTools SDK newer than the active linker understands, giving
+# "tapi error: malformed file ... unknown architecture arm64e.x1". Pick the
+# newest SDK the linker can actually parse.
+if [[ -z "${SDKROOT:-}" ]]; then
+    for candidate in \
+        "$(xcode-select -p)/Platforms/MacOSX.platform/Developer/SDKs"/MacOSX*.sdk \
+        /Library/Developer/CommandLineTools/SDKs/MacOSX*.sdk
+    do
+        [[ -d "$candidate" ]] || continue
+        if echo 'int main(void){return 0;}' \
+            | clang -isysroot "$candidate" -x c - -o /dev/null 2>/dev/null; then
+            export SDKROOT="$candidate"
+            break
+        fi
+    done
+fi
+if [[ -n "${SDKROOT:-}" ]]; then
+    echo "    SDK: $SDKROOT"
+else
+    echo "    WARNING: no working SDK found; using compiler defaults" >&2
+fi
+
+# Only the host architecture is needed. Cross-building the x86_64 slice fails
+# on toolchains whose SDK has dropped it, and nothing here runs under Rosetta.
+HOST_ARCH="$(uname -m)"
+case "$HOST_ARCH" in
+    arm64)  LIB_SLICE="BouncyHsm.Pkcs11Lib-arm64.dylib" ;;
+    x86_64) LIB_SLICE="BouncyHsm.Pkcs11Lib-x64.dylib" ;;
+    *) echo "ERROR: unsupported host architecture $HOST_ARCH" >&2; exit 1 ;;
+esac
+
+( cd "$SRC_DIR/build_macos" && make -s "$LIB_SLICE" )
 mkdir -p "$LIB_DIR"
-cp -f "$SRC_DIR/build_macos/BouncyHsm.Pkcs11Lib.dylib"       "$LIB_DIR/"
-cp -f "$SRC_DIR/build_macos/BouncyHsm.Pkcs11Lib-arm64.dylib" "$LIB_DIR/"
-echo "    -> $HERE/$LIB_DIR/BouncyHsm.Pkcs11Lib.dylib"
+cp -f "$SRC_DIR/build_macos/$LIB_SLICE" "$LIB_DIR/"
+# verify_bouncyhsm.py and the arg files load the unsuffixed name.
+cp -f "$SRC_DIR/build_macos/$LIB_SLICE" "$LIB_DIR/BouncyHsm.Pkcs11Lib.dylib"
+echo "    -> $HERE/$LIB_DIR/BouncyHsm.Pkcs11Lib.dylib ($HOST_ARCH)"
 
 echo "[3/3] Starting BouncyHsm server ($CONTAINER_ENGINE)..."
 "$CONTAINER_ENGINE" compose -f docker-compose.bouncyhsm.yml up -d --build

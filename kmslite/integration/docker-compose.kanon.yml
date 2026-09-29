@@ -1,0 +1,45 @@
+# kmslite on Kanon storage (kanon-anoncreds) with BouncyHsm.
+#
+# Kanon keeps records in the DBStore and keys in Askar, so this agent
+# provisions BOTH stores. It exists to prove kmslite writes keys to the
+# Askar session rather than Kanon's DBStore `handle`.
+#
+# PREREQUISITE: the agent image must contain a Linux PKCS#11 client library
+# for BouncyHsm. The repo currently builds only a macOS .dylib (see
+# BOUNCYHSM.md / setup.sh), so either build a Linux .so into the image via
+# PKCS11_LIB_PATH below, or run the agent host-native instead — see
+# README.md, "Kanon storage".
+#
+# Usage:
+#   docker compose -f docker-compose.bouncyhsm.yml up -d
+#   docker compose -f docker-compose.kanon.yml up --build
+
+services:
+  alice-kanon:
+    image: plugin-image
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        - install_flags=--no-interaction --with integration --extras aca-py
+    command: >
+      start --arg-file integration-kanon.yml --label alice-kanon
+      -e http://alice-kanon:3000 --log-level info
+    ports:
+      - "3001:3001"
+    environment:
+      - KMSLITE_PROVIDER=hsm
+      - KMSLITE_PROTOCOL=pkcs11
+      - KMSLITE_PKCS11_LIBRARY_PATH=${PKCS11_LIB_PATH:-/opt/bouncyhsm-client/native/Linux-x64/BouncyHsm.Pkcs11Lib.so}
+      - KMSLITE_PKCS11_TOKEN_NAME=${KMSLITE_TOKEN_LABEL:-kmslite-test}
+      - KMSLITE_PKCS11_PIN=${KMSLITE_USER_PIN:-1234}
+      # Transport target for the BouncyHsm client library.
+      - BOUNCY_HSM_CLIENT_CONNECTION_STRING=Server=bouncyhsm; Port=8765;
+    networks:
+      - default
+      - kmslite-bouncyhsm
+
+networks:
+  kmslite-bouncyhsm:
+    external: true
+    name: integration_default

@@ -1,0 +1,62 @@
+# Overlay: use SoftHSM2 in-process instead of the BouncyHsm server.
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.softhsm.yml up --build
+#
+# SoftHSM2 is the stricter PKCS#11 implementation of the two — it returns
+# CKR_USER_ALREADY_LOGGED_IN where BouncyHsm tolerates a repeat C_Login — so
+# it is worth running periodically even though BouncyHsm is the default.
+#
+# The bouncyhsm service still starts under this overlay; `docker compose stop
+# bouncyhsm` if you want it out of the way.
+
+services:
+
+  issuer:
+    environment:
+      # entrypoint.sh falls back to softhsm2-util when the path isn't BouncyHsm.
+      KMSLITE_PKCS11_LIBRARY_PATH: /usr/lib/softhsm/libsofthsm2.so
+      BOUNCY_HSM_CFG_STRING: ""
+    volumes:
+      - softhsm_tokens:/var/lib/softhsm/tokens
+    command: >
+      aca-py start
+        --inbound-transport http 0.0.0.0 3000
+        --outbound-transport http
+        --endpoint http://issuer:3000
+        --admin 0.0.0.0 3001
+        --admin-insecure-mode
+        --webhook-url http://webhook-listener:8080
+        --no-ledger
+        --wallet-type kanon-anoncreds
+        --wallet-name issuer
+        --wallet-key insecure
+        --auto-provision
+        --emit-new-didcomm-prefix
+        --log-level INFO
+        --debug-webhooks
+        --plugin kmslite.v1_0
+        --plugin oid4vc
+        --plugin jwt_vc_json
+        --plugin sd_jwt_vc
+        --plugin status_list.v1_0
+        --multitenant
+        --multitenant-admin
+        --jwt-secret insecure
+        --multitenancy-config wallet_type=single-wallet-kanon
+        -o kmslite.provider=hsm
+        -o kmslite.protocol=pkcs11
+        -o kmslite.pkcs11.library_path=/usr/lib/softhsm/libsofthsm2.so
+        -o kmslite.pkcs11.token_name=kmslite-demo
+        -o kmslite.pkcs11.pin_env=HSM_PIN
+        --block-plugin acapy_agent.anoncreds
+        --block-plugin acapy_agent.ledger
+        --block-plugin acapy_agent.revocation
+        --block-plugin acapy_agent.revocation_anoncreds
+        --block-plugin acapy_agent.messaging.schemas
+        --block-plugin acapy_agent.messaging.credential_definitions
+        --block-plugin acapy_agent.connections
+        --block-plugin acapy_agent.holder
+        --block-plugin acapy_agent.protocols.issue_credential
+        --block-plugin acapy_agent.protocols.present_proof
+        --block-plugin acapy_agent.protocols.didexchange
+        --block-plugin acapy_agent.protocols.out_of_band

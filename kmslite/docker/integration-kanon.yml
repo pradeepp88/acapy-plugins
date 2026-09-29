@@ -1,0 +1,33 @@
+label: kmslite-kanon
+
+admin: [0.0.0.0, 3001]
+admin-insecure-mode: true
+
+inbound-transport:
+  - [http, 0.0.0.0, 3000]
+outbound-transport: http
+endpoint:
+  - http://host.docker.internal:3000
+
+plugin:
+  - kmslite.v1_0
+
+# Kanon keeps records in the DBStore but still uses Askar for key management,
+# so both stores must be configured. See docs/features/KanonStorage.md.
+wallet-type: kanon-anoncreds
+wallet-name: kmslite_kanon
+wallet-key: kms.storage.secret
+wallet-key-derivation-method: RAW
+wallet-storage-type: sqlite
+
+dbstore-storage-type: sqlite
+dbstore-schema-config: normalize
+
+auto-provision: true
+
+genesis-url: http://test.bcovrin.vonx.io/genesis
+
+log-level: info
+
+auto-accept-invites: true
+auto-respond-messages: true

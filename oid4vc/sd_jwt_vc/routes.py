@@ -13,7 +13,7 @@ from aiohttp_apispec import (
 )
 from acapy_agent.admin.decorators.auth import tenant_authentication
 from acapy_agent.admin.request_context import AdminRequestContext
-from acapy_agent.askar.profile import AskarProfileSession
+from acapy_agent.core.profile import ProfileSession
 from acapy_agent.storage.error import StorageError, StorageNotFoundError
 from acapy_agent.messaging.models.base import BaseModelError
 from acapy_agent.messaging.models.openapi import OpenAPISchema
@@ -200,7 +200,7 @@ class SupportedCredentialMatchSchema(OpenAPISchema):
 async def supported_cred_update_helper(
     record: SupportedCredential,
     body: Dict[str, Any],
-    session: AskarProfileSession,
+    session: ProfileSession,
 ) -> SupportedCredential:
     """Helper method for updating an SD-JWT VC Supported Credential Record."""
 
@@ -254,7 +254,6 @@ async def update_supported_credential_sd_jwt(request: web.Request):
         async with context.session() as session:
             record = await SupportedCredential.retrieve_by_id(session, supported_cred_id)
 
-            assert isinstance(session, AskarProfileSession)
             record = await supported_cred_update_helper(record, body, session)
 
     except StorageNotFoundError as err:

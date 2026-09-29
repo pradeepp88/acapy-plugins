@@ -75,6 +75,8 @@ const API_KEY = process.env.API_KEY;
 const AUTHSERVER_NGROK_URL = process.env.AUTHSERVER_NGROK_URL;
 const ADMIN_MANAGE_AUTH_TOKEN = process.env.ADMIN_MANAGE_AUTH_TOKEN;
 const TENANT_SECRET = process.env.TENANT_SECRET;
+// PKCS#11 label the HSM keypair is created under.
+const HSM_KEY_REF = process.env.HSM_KEY_REF || "kmslite-demo-issuer";
 
 //certificate and private key to import for mDL issuance
 //expires 2036, private_key is PEM base64 encoded PKCS #8.
@@ -256,7 +258,7 @@ async function issue_jwt_credential(req, res) {
     status_purpose: "revocation",
     status_size: 1,
     supported_cred_id: jwtVcSupportedCredID,
-    verification_method: issuerDID+"#0"
+    verification_method: issuerVerificationMethod
     })
   };
 
@@ -274,7 +276,7 @@ async function issue_jwt_credential(req, res) {
   const exchangeCreateOptions = {
     credential_subject: { id: req.body.registrationId, first_name: firstName, last_name: lastName, email },
     did: issuerDID,
-    verification_method: issuerDID+"#0",
+    verification_method: issuerVerificationMethod,
     supported_cred_id: jwtVcSupportedCredID,
   };
   events.emit(`issuance-${req.body.registrationId}`, {type: "message", message: "Generating Credential Exchange."});
@@ -515,7 +517,7 @@ async function issue_sdjwt_credential(req, res) {
     status_purpose: "revocation",
     status_size: 1,
     supported_cred_id: sdJwtSupportedCredID,
-    verification_method: issuerDID+"#0"
+    verification_method: issuerVerificationMethod
     })
   };
 
@@ -533,7 +535,7 @@ async function issue_sdjwt_credential(req, res) {
 
   const exchangeCreateOptions = {
     did: issuerDID,
-    verification_method: issuerDID+"#0",
+    verification_method: issuerVerificationMethod,
     supported_cred_id: sdJwtSupportedCredID,
     credential_subject: {
       given_name: firstName,
@@ -732,7 +734,7 @@ async function issue_mdoc_credential(req, res) {
           un_distinguishing_sign,
         }
       },
-      verification_method: issuerDID + "#0",
+      verification_method: issuerVerificationMethod,
   };
 
   events.emit(`issuance-${req.body.registrationId}`, {type: "message", message: "Generating Credential Exchange."});
@@ -1412,7 +1414,9 @@ async function initializeIssuerMetadata() {
 }
 
 // Create Signing DID. Note that this DID is used to sign both the credential and status list (required by IETF token status list spec)
+// Created through kmslite so the private key is generated in, and never leaves, the HSM.
 let issuerDID = null;
+let issuerVerificationMethod = null;
 async function initializeSigningDid() {
   try {
     const commonHeaders = {
@@ -1420,22 +1424,31 @@ async function initializeSigningDid() {
       "Content-Type": "application/json",
       "Authorization": "Bearer " + token.token,
     }
-    const createDidUrl = `${API_BASE_URL}/did/jwk/create`;
+    const createDidUrl = `${API_BASE_URL}/kmslite/did/create`;
     const createDidOptions = {
       method: "POST",
       headers: commonHeaders,
       body: JSON.stringify({
+        // did:jwk cannot be derived by ACA-Py, so the HSM DID is did:key.
+        method: "key",
         key_type: "p256",
+        options: { key_ref: HSM_KEY_REF },
       }),
     };
     logger.info(`Posting Create DID Request to: ${createDidUrl}`);
     logger.info("Request options", createDidOptions);
     const didData = await fetchApiData(createDidUrl, createDidOptions);
     const { did } = didData;
+    if (!did) {
+      throw new Error(`kmslite did/create returned no did: ${JSON.stringify(didData)}`);
+    }
     issuerDID = did;
-    logger.info(`Created signing DID: ${issuerDID}`);
+    // did:key verification methods repeat the multibase key, unlike did:jwk's "#0".
+    issuerVerificationMethod = `${did}#${did.split(":")[2]}`;
+    logger.info(`Created HSM signing DID: ${issuerDID}`);
+    logger.info(`Signer metadata: ${JSON.stringify(didData.metadata)}`);
   } catch (err) {
-    logger.error("Signing DID initialization failed:", err?.response?.data || err.message);
+    logger.error(`Signing DID initialization failed: ${JSON.stringify(err?.response?.data || err.message)}`);
   }
 }
 

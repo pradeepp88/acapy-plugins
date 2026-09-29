@@ -1,0 +1,265 @@
+# kmslite + oid4vc on Kanon storage, with the oid4vc demo frontend.
+#
+# Mirrors oid4vc/demo/docker-compose.yaml with these changes:
+#   - wallet-type kanon-anoncreds; BOTH of Kanon's stores run on the demo's
+#     `db` container (Askar -> issuer, DBStore -> issuer_dbstore)
+#   - the kmslite plugin, signing through a BouncyHsm PKCS#11 token
+#   - a combined image built from the LOCAL acapy checkout
+#
+# mso_mdoc is deliberately not loaded: it needs isomdl_uniffi, which ships no
+# linux/aarch64 wheel. The demo app's mDL init logs a harmless 404 as a result.
+#
+# Prerequisite: cp .env.example .env and set NGROK_AUTHTOKEN.
+#
+#   docker compose up --build
+#
+# To use SoftHSM2 in-process instead of the BouncyHsm server:
+#   docker compose -f docker-compose.yaml -f docker-compose.softhsm.yml up --build
+#
+# Frontend      http://localhost:3002
+# Admin API     http://localhost:3001/api/doc
+# Auth server   http://localhost:9000/docs
+# BouncyHsm UI  http://localhost:8090   (override with BOUNCYHSM_UI_PORT)
+
+services:
+
+  issuer:
+    image: kmslite-kanon-oid4vc
+    build:
+      # Parent of acapy/ and acapy-plugins/ — both are needed.
+      context: ../../..
+      dockerfile: acapy-plugins/kmslite/demo/Dockerfile
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+      - "8082:8082"
+    environment:
+      RUST_LOG: warn
+      TUNNEL_ENDPOINT: http://ngrok:4040
+      OID4VCI_HOST: 0.0.0.0
+      OID4VCI_PORT: 8082
+      OID4VCI_STATUS_HANDLER: status_list.v1_0.status_handler
+      STATUS_LIST_SIZE: 131072
+      STATUS_LIST_SHARD_SIZE: 131072
+      # entrypoint.sh keys off "bouncyhsm" in this path and provisions the
+      # token through the server's REST API rather than softhsm2-util.
+      KMSLITE_PKCS11_LIBRARY_PATH: /opt/bouncyhsm/BouncyHsm.Pkcs11Lib.so
+      BOUNCY_HSM_CFG_STRING: "Server=bouncyhsm;Port=8765;"
+      BOUNCY_HSM_HTTP: http://bouncyhsm:8080
+      KMSLITE_PKCS11_TOKEN_NAME: kmslite-demo
+      KMSLITE_PKCS11_PIN: "1234"
+      # pin_env indirection keeps the PIN out of the config file.
+      HSM_PIN: "1234"
+      # Storage JSON lives here, not in `command:` — a folded command string is
+      # shell-split and loses the inner double quotes, which Kanon rejects.
+      ACAPY_WALLET_STORAGE_TYPE: postgres
+      ACAPY_WALLET_STORAGE_CONFIG: '{"url":"db:5432","max_connections":10,"min_idle_count":2}'
+      ACAPY_WALLET_STORAGE_CREDS: '{"account":"postgres","password":"postgres"}'
+      ACAPY_DBSTORE_STORAGE_TYPE: postgres
+      ACAPY_DBSTORE_STORAGE_CONFIG: '{"url":"db:5432","connection_timeout":30.0,"max_connections":10,"min_idle_count":2}'
+      ACAPY_DBSTORE_STORAGE_CREDS: '{"account":"postgres","password":"postgres"}'
+      ACAPY_DBSTORE_SCHEMA_CONFIG: normalize
+    command: >
+      aca-py start
+        --inbound-transport http 0.0.0.0 3000
+        --outbound-transport http
+        --endpoint http://issuer:3000
+        --admin 0.0.0.0 3001
+        --admin-insecure-mode
+        --webhook-url http://webhook-listener:8080
+        --no-ledger
+        --wallet-type kanon-anoncreds
+        --wallet-name issuer
+        --wallet-key insecure
+        --auto-provision
+        --emit-new-didcomm-prefix
+        --log-level INFO
+        --debug-webhooks
+        --plugin kmslite.v1_0
+        --plugin oid4vc
+        --plugin jwt_vc_json
+        --plugin sd_jwt_vc
+        --multitenant
+        --multitenant-admin
+        --jwt-secret insecure
+        --multitenancy-config wallet_type=single-wallet-kanon
+        -o kmslite.provider=hsm
+        -o kmslite.protocol=pkcs11
+        -o kmslite.pkcs11.library_path=/opt/bouncyhsm/BouncyHsm.Pkcs11Lib.so
+        -o kmslite.pkcs11.token_name=kmslite-demo
+        -o kmslite.pkcs11.pin_env=HSM_PIN
+        --block-plugin acapy_agent.anoncreds
+        --block-plugin acapy_agent.ledger
+        --block-plugin acapy_agent.revocation
+        --block-plugin acapy_agent.messaging.schemas
+        --block-plugin acapy_agent.messaging.credential_definitions
+        --block-plugin acapy_agent.revocation_anoncreds
+        --block-plugin acapy_agent.anoncreds.default.did_indy
+        --block-plugin acapy_agent.anoncreds.default.did_web
+        --block-plugin acapy_agent.anoncreds.default.legacy_indy
+        --block-plugin acapy_agent.vc
+        --block-plugin acapy_agent.vc.data_integrity
+        --block-plugin acapy_agent.messaging.jsonld
+        --block-plugin acapy_agent.anoncreds.revocation
+        --block-plugin acapy_agent.connections
+        --block-plugin acapy_agent.did.indy
+        --block-plugin acapy_agent.holder
+        --block-plugin acapy_agent.protocols.actionmenu
+        --block-plugin acapy_agent.protocols.basicmessage
+        --block-plugin acapy_agent.protocols.coordinate_mediation
+        --block-plugin acapy_agent.protocols.didexchange
+        --block-plugin acapy_agent.protocols.discovery
+        --block-plugin acapy_agent.protocols.endorse_transaction
+        --block-plugin acapy_agent.protocols.introduction
+        --block-plugin acapy_agent.protocols.issue_credential
+        --block-plugin acapy_agent.protocols.notification
+        --block-plugin acapy_agent.protocols.out_of_band
+        --block-plugin acapy_agent.protocols.present_proof
+        --block-plugin acapy_agent.protocols.problem_report
+        --block-plugin acapy_agent.protocols.revocation_notification
+        --block-plugin acapy_agent.protocols.routing
+        --block-plugin acapy_agent.protocols.trustping
+        --block-plugin acapy_agent.resolver
+    healthcheck:
+      test: curl -s -o /dev/null -w '%{http_code}' "http://localhost:3001/status/live" | grep "200" > /dev/null
+      start_period: 45s
+      interval: 7s
+      timeout: 5s
+      retries: 8
+    depends_on:
+      bouncyhsm:
+        condition: service_started
+      db:
+        condition: service_healthy
+      webhook-listener:
+        condition: service_started
+      auth-server:
+        condition: service_healthy
+
+  # PKCS#11 token for kmslite. The client library is compiled for the image's
+  # native architecture by the bouncyhsm-client stage in Dockerfile.
+  #
+  # Only the web UI is published, on 8090 to avoid clashing with the
+  # integration/ BouncyHsm (which uses 8080 + 8765). The issuer reaches this
+  # one over the compose network as bouncyhsm:8765, so no host port is needed.
+  bouncyhsm:
+    build:
+      context: ../integration/bouncyhsm-server
+      args:
+        BOUNCYHSM_VERSION: "2.3.0"
+    image: kmslite/bouncyhsm:2.3.0
+    ports:
+      - "${BOUNCYHSM_UI_PORT:-8090}:8080"
+    volumes:
+      - bouncyhsm_data:/var/BouncyHsm
+    restart: unless-stopped
+
+  demo-app:
+    build:
+      context: ./frontend
+    ports:
+      - "3002:3000"
+    volumes:
+      - ./frontend/index.js:/app/index.js:z
+      - ./frontend/templates:/app/templates:z
+    environment:
+      NODE_ENV: development
+      WDS_SOCKET_PORT: 0
+      API_BASE_URL: http://issuer:3001
+      FORCE_COLOR: 3
+      TUNNEL_ENDPOINT: http://ngrok:4040
+      ADMIN_MANAGE_AUTH_TOKEN: $ADMIN_MANAGE_AUTH_TOKEN
+      HSM_KEY_REF: kmslite-demo-issuer
+      # auth-server enforces MIN_CLIENT_SECRET_LENGTH=32; shorter values make
+      # client creation 400 and the issuer then has no credentials to present.
+      TENANT_SECRET: insecure-demo-tenant-secret-0123456789
+    depends_on:
+      issuer:
+        condition: service_healthy
+
+  webhook-listener:
+    image: mendhak/http-https-echo:18
+    environment:
+      - HTTP_PORT=8080
+
+  ngrok:
+    image: ngrok/ngrok
+    restart: unless-stopped
+    hostname: ngrok
+    ports:
+      - "4040:4040"
+    volumes:
+      - ../../oid4vc/demo/ngrok.yml:/etc/ngrok.yml:ro
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    command: ["start", "--all", "--config", "/etc/ngrok.yml"]
+
+  auth-server:
+    build:
+      dockerfile: docker/Dockerfile
+      context: ../../oid4vc/auth_server
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      ADMIN_DB_HOST: db
+      ADMIN_DB_USER: auth_server_admin
+      ADMIN_DB_PASSWORD: postgres
+      ADMIN_DB_NAME: auth_server_admin
+      ADMIN_DB_PORT: 5432
+      ADMIN_DB_SCHEMA: admin
+      ADMIN_APP_TITLE: OAuth 2.0 Authorization Server Admin API
+      ADMIN_APP_VERSION: 0.2.0
+      ADMIN_APP_ROOT_PATH: /
+      ADMIN_MANAGE_AUTH_TOKEN: $ADMIN_MANAGE_AUTH_TOKEN
+      ADMIN_INTERNAL_AUTH_TOKEN: $ADMIN_INTERNAL_AUTH_TOKEN
+      ADMIN_TENANT_DB_NAME: auth_server_tenant
+      ADMIN_TENANT_DB_SCHEMA: auth
+      TENANT_INTERNAL_BASE_URL: http://auth-server:9000/internal
+      TENANT_INTERNAL_AUTH_TOKEN: $TENANT_INTERNAL_AUTH_TOKEN
+      TENANT_APP_ROOT_PATH: /
+      TENANT_DB_HOST: db
+      TENANT_DB_PORT: 5432
+      TENANT_PROXY_TRUSTED_HOSTS: "*"
+      TENANT_INCLUDE_NONCE: "false"
+      # DPoP off: supplied proofs are ignored and tokens are plain Bearer.
+      TENANT_DPOP_ENABLED: "false"
+      TENANT_DPOP_REQUIRED: "false"
+      # OID4VCI 13.10 caps bearer access tokens at 5 minutes when DPoP is off.
+      TENANT_ACCESS_TOKEN_TTL: "300"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: >
+        curl -s -o /dev/null -w '%{http_code}' "http://localhost:9000/healthz" | grep "200" > /dev/null &&
+        curl -s -o /dev/null -w '%{http_code}' "http://localhost:9001/healthz" | grep "200" > /dev/null
+      start_period: 30s
+      interval: 7s
+      timeout: 5s
+      retries: 5
+
+  # Shared by auth-server and by both of Kanon's stores (Askar -> "issuer",
+  # DBStore -> "issuer_dbstore"). The superuser account lets --auto-provision
+  # CREATE DATABASE on first run.
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  bouncyhsm_data:
+  softhsm_tokens:
+  pg_data:

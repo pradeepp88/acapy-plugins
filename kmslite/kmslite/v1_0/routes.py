@@ -144,6 +144,15 @@ def _keyalg_for(key_type_name: str) -> KeyAlg:
         )
 
 
+def _key_handle(session):
+    """Askar session holding key material.
+
+    Kanon splits storage: `session.handle` is the record store (DBStore) and
+    keys live on `askar_handle`. Plain Askar exposes only `handle`.
+    """
+    return getattr(session, "askar_handle", None) or session.handle
+
+
 async def _get_local_did(wallet: BaseWallet, did: str) -> DIDInfo:
     try:
         return await wallet.get_local_did(did)
@@ -205,7 +214,7 @@ async def create_kms_did(request: web.BaseRequest):
             _keyalg_for(key_type_name), b58_to_bytes(verkey)
         )
         async with context.profile.session() as session:
-            await session.handle.insert_key(
+            await _key_handle(session).insert_key(
                 verkey, askar_key, metadata=json.dumps(metadata)
             )
             wallet = session.inject(BaseWallet)

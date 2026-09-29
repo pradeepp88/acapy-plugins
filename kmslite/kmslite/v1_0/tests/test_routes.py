@@ -297,6 +297,27 @@ async def test_get_certificate_404_when_not_bound(context, fake_signer):
         )
 
 
+# --------------------------------------------------------------------- key handle selection
+
+
+def test_key_handle_prefers_askar_handle_on_kanon():
+    """Kanon's `handle` is the DBStore record session; keys live on `askar_handle`."""
+    session = MagicMock()
+    session.askar_handle = "askar-session"
+    session.handle = "dbstore-session"
+
+    assert kmslite_routes._key_handle(session) == "askar-session"
+
+
+def test_key_handle_falls_back_to_handle_on_askar():
+    """Plain Askar sessions expose only `handle`."""
+
+    class _AskarSession:
+        handle = "askar-session"
+
+    assert kmslite_routes._key_handle(_AskarSession()) == "askar-session"
+
+
 # --------------------------------------------------------------------- registration
 
 

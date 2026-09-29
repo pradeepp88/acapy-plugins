@@ -2,7 +2,6 @@
 
 import json
 
-from acapy_agent.askar.profile import AskarProfileSession
 from acapy_agent.core.profile import ProfileSession
 from acapy_agent.storage.base import BaseStorage, StorageRecord
 from acapy_agent.storage.error import StorageNotFoundError
@@ -13,6 +12,18 @@ from acapy_agent.wallet.util import bytes_to_b64
 from aries_askar import Key, KeyAlg
 
 from .jwk import DID_JWK
+
+
+def askar_key_handle(session: ProfileSession):
+    """Return the Askar session handle that holds key material.
+
+    Kanon splits storage: `session.handle` is the record store (DBStore) and
+    keys live on `askar_handle`. Plain Askar exposes only `handle`.
+    """
+    handle = getattr(session, "askar_handle", None) or getattr(session, "handle", None)
+    if handle is None:
+        raise ValueError("Profile session does not expose Askar key storage")
+    return handle
 
 
 async def _retrieve_default_did(session: ProfileSession):
@@ -40,15 +51,11 @@ async def _create_default_did(session: ProfileSession) -> DIDInfo:
     the resulting DID is stored exactly the same way and can be resolved
     by jwt_sign / key_material_for_kid.
     """
-    assert isinstance(session, AskarProfileSession), (
-        "did_utils requires an Askar-backed profile session"
-    )
-
     wallet = session.inject(BaseWallet)
     storage = session.inject(BaseStorage)
 
     key = Key.generate(KeyAlg.ED25519)
-    await session.handle.insert_key(key.get_jwk_thumbprint(), key)
+    await askar_key_handle(session).insert_key(key.get_jwk_thumbprint(), key)
 
     jwk = json.loads(key.get_jwk_public())
     jwk["use"] = "sig"
