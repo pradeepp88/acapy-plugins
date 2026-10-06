@@ -32,4 +32,12 @@ ENV ALEMBIC_DB_SCHEMA="admin"
 COPY docker/entrypoint_authserver_openshift.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# OpenShift runs the container as a random UID that belongs to group 0 and has
+# no passwd entry. Give group 0 the owner's access to everything poetry touches
+# at runtime, and point HOME somewhere writable (it would otherwise be /).
+ENV HOME=/usr/src/app
+RUN chgrp -R 0 /usr/src/app /opt/poetry \
+    && chmod -R g=u /usr/src/app /opt/poetry
+USER 1001
+
 ENTRYPOINT ["/entrypoint.sh"]

@@ -80,8 +80,14 @@ const API_KEY = process.env.API_KEY;
 const AUTHSERVER_NGROK_URL = process.env.AUTHSERVER_NGROK_URL;
 const ADMIN_MANAGE_AUTH_TOKEN = process.env.ADMIN_MANAGE_AUTH_TOKEN;
 const TENANT_SECRET = process.env.TENANT_SECRET;
-// The issuer's OID4VCI public server, reachable inside the compose network.
-const OID4VCI_INTERNAL_URL = process.env.OID4VCI_INTERNAL_URL || "http://issuer:8082";
+// The issuer's OID4VCI public server as reached from this app. Defaults to the
+// admin API's host on the OID4VCI port, so it follows whatever API_BASE_URL is
+// (http://issuer:3001 under compose, http://issuing-service:3001 on OpenShift).
+const OID4VCI_INTERNAL_URL = process.env.OID4VCI_INTERNAL_URL || (() => {
+  const url = new URL(API_BASE_URL);
+  url.port = process.env.OID4VCI_PORT || "8082";
+  return url.origin;
+})();
 
 //certificate and private key to import for mDL issuance
 //expires 2036, private_key is PEM base64 encoded PKCS #8.
@@ -777,11 +783,14 @@ const x509Steps = {
     // The credential issuer identifier doubles as `iss` and goes in the certificate.
     const metadataUrl = `${OID4VCI_INTERNAL_URL}/.well-known/openid-credential-issuer/tenant/${WALLET_ID}`;
     x509.iss = (await axios.get(metadataUrl)).data.credential_issuer;
+    // The hostname goes in the certificate's SAN (step 3), which is what
+    // verifiers match. CN is capped at 64 characters, too short for many
+    // hosted hostnames, so it carries a label instead.
     x509.csrRequest = {
       subject: {
         country: "CA",
         organization: "OID4VC Demo Issuer",
-        common_name: new URL(x509.iss).hostname,
+        common_name: "OID4VC Demo Issuer",
       },
     };
     const response = await axios.post(

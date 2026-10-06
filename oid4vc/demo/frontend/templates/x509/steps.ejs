@@ -61,7 +61,7 @@
         <% } %>
 
         <% if (done && n === 2) { %>
-          <p class="w3-small"><b>Issuer identifier</b> (used as the CSR common name, the certificate SAN and the credential <code>iss</code>): <code><%= x509.iss %></code></p>
+          <p class="w3-small"><b>Issuer identifier</b> (goes in the certificate SAN in step 3 and becomes the credential <code>iss</code>): <code><%= x509.iss %></code></p>
           <p class="w3-small"><b>Request</b></p>
           <pre class="w3-light-grey w3-small" style="padding: 8px; white-space: pre-wrap;"><%= json(x509.csrRequest) %></pre>
           <p class="w3-small"><b>CSR</b></p>
