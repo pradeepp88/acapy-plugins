@@ -160,14 +160,18 @@ exist today.
 This defines the credential type: its `vct`, which claims are selectively
 disclosable, how wallets should display it, and - new - which key signs it.
 
+The example is an Ontario **Private Security Guard Licence**, issued under the
+*Private Security and Investigative Services Act, 2005*, with a holder photo and
+bilingual (English / French) display.
+
 ```http
 POST /oid4vci/credential-supported/create/sd-jwt
 Content-Type: application/json
 
 {
   "format": "vc+sd-jwt",
-  "identifier": "ExampleIDCard",
-  "vct": "https://issuer.example.gov.on.ca/credentials/id-card/v1",
+  "identifier": "SecurityGuardLicence",
+  "vct": "https://issuer.example.gov.on.ca/credentials/security-guard-licence/v1",
 
   "signing_multikey": "zDnaeaqzTWBtkgYZFwMCAJQwR7rDVxJmbUJtNhnDD3YG3ysTb",
   "iss": "https://issuer.example.gov.on.ca",
@@ -181,31 +185,85 @@ Content-Type: application/json
   "sd_list": [
     "/given_name",
     "/family_name",
-    "/birth_date",
-    "/age_is_over_18",
-    "/age_is_over_21"
+    "/licence_number",
+    "/licence_class",
+    "/expiry_date",
+    "/portrait"
   ],
 
   "credential_metadata": {
     "display": [
       {
-        "name": "Example ID Card",
+        "name": "Security Guard Licence",
         "locale": "en-CA",
-        "background_color": "#12107c",
-        "text_color": "#FFFFFF"
+        "background_color": "#1A1A1A",
+        "text_color": "#FFFFFF",
+        "logo": {
+          "uri": "https://issuer.example.gov.on.ca/assets/ontario-logo.png",
+          "alt_text": "Government of Ontario"
+        }
+      },
+      {
+        "name": "Permis d'agent de securite",
+        "locale": "fr-CA",
+        "background_color": "#1A1A1A",
+        "text_color": "#FFFFFF",
+        "logo": {
+          "uri": "https://issuer.example.gov.on.ca/assets/ontario-logo.png",
+          "alt_text": "Gouvernement de l'Ontario"
+        }
       }
     ],
     "claims": [
-      { "path": ["given_name"],
-        "display": [{ "name": "Given Name", "locale": "en-CA" }] },
-      { "path": ["family_name"],
-        "display": [{ "name": "Family Name", "locale": "en-CA" }] },
-      { "path": ["birth_date"],
-        "display": [{ "name": "Date of Birth", "locale": "en-CA" }] },
-      { "path": ["age_is_over_18"],
-        "display": [{ "name": "Age 18 or Over", "locale": "en-CA" }] },
-      { "path": ["age_is_over_21"],
-        "display": [{ "name": "Age 21 or Over", "locale": "en-CA" }] }
+      {
+        "path": ["given_name"],
+        "display": [
+          { "name": "Given Name", "locale": "en-CA" },
+          { "name": "Prenom", "locale": "fr-CA" }
+        ]
+      },
+      {
+        "path": ["family_name"],
+        "display": [
+          { "name": "Family Name", "locale": "en-CA" },
+          { "name": "Nom", "locale": "fr-CA" }
+        ]
+      },
+      {
+        "path": ["licence_class"],
+        "display": [
+          { "name": "Class", "locale": "en-CA" },
+          { "name": "Categorie", "locale": "fr-CA" }
+        ]
+      },
+      {
+        "path": ["licence_number"],
+        "display": [
+          { "name": "Licence Number", "locale": "en-CA" },
+          { "name": "Numero de permis", "locale": "fr-CA" }
+        ]
+      },
+      {
+        "path": ["expiry_date"],
+        "display": [
+          { "name": "Expires", "locale": "en-CA" },
+          { "name": "Date d'expiration", "locale": "fr-CA" }
+        ]
+      },
+      {
+        "path": ["portrait"],
+        "display": [
+          { "name": "Photo", "locale": "en-CA" },
+          { "name": "Photo", "locale": "fr-CA" }
+        ]
+      },
+      {
+        "path": ["issuing_authority"],
+        "display": [
+          { "name": "Issuing Authority", "locale": "en-CA" },
+          { "name": "Autorite de delivrance", "locale": "fr-CA" }
+        ]
+      }
     ]
   }
 }
@@ -227,6 +285,42 @@ Notes on the fields that matter for X.509:
 
 `cryptographic_binding_methods_supported: ["jwk"]` refers to the **holder** key
 binding, not the issuer. It is unrelated to `x5c`.
+
+### Language handling
+
+Each entry in `display` and in `claims[].display` is selected by `locale`. A
+wallet picks the entry matching the user's locale and falls back to the first
+entry when there is no match, so **list the preferred default first**.
+
+Two things to decide deliberately:
+
+- `vct` is a type identifier, not display text. It stays a single value and is
+  never localised.
+- Claim **names** (`given_name`, `licence_class`) are identifiers and stay in
+  English. Only the `display[].name` labels are translated. Translating claim
+  keys breaks selective disclosure, because `sd_list` pointers and verifier
+  queries both address claims by key.
+
+Claim **values** that are themselves language-dependent - `licence_class` is
+"Individual Security Guard" in English and "Agent de securite individuel" in
+French - cannot be localised through `display`. Either pick a canonical code
+such as `INDIVIDUAL_SECURITY_GUARD` and let the wallet render it, or carry both
+values as separate claims. The first is preferable.
+
+### Photo
+
+`portrait` carries a base64-encoded JPEG. Keep it small: it is embedded in the
+credential and, as a selectively disclosable claim, it also inflates the
+disclosure array.
+
+A 200x250 portrait at moderate JPEG quality is roughly 15-25 KB, which becomes
+about 20-34 KB once base64-encoded. That is already the largest part of the
+credential, and QR-code offers have practical size limits - another reason the
+offer carries only a `credential_offer_uri` reference rather than the credential
+itself.
+
+Making `portrait` selectively disclosable matters: a licence check needs the
+photo, while proving "I hold a valid licence" to an online service does not.
 
 ### Issuer metadata (exists)
 
@@ -269,11 +363,13 @@ Content-Type: application/json
 {
   "supported_cred_id": "da50e244-a11f-49e4-855d-6f8b2f24ee94",
   "credential_subject": {
-    "given_name": "Sally",
-    "family_name": "Sparrow",
-    "birth_date": "1990-04-13",
-    "age_is_over_18": true,
-    "age_is_over_21": true
+    "given_name": "Nicholas",
+    "family_name": "Claus",
+    "licence_number": "11548728",
+    "licence_class": "INDIVIDUAL_SECURITY_GUARD",
+    "expiry_date": "2028-09-18",
+    "issuing_authority": "Ministry of the Solicitor General, Private Security and Investigative Services Branch",
+    "portrait": "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/..."
   }
 }
 ```
@@ -285,6 +381,12 @@ Content-Type: application/json
   "supported_cred_id": "da50e244-a11f-49e4-855d-6f8b2f24ee94"
 }
 ```
+
+`expiry_date` is the licence expiry shown to the holder. It is a claim, not the
+credential's own `exp` - those are independent and can legitimately differ.
+
+`portrait` is raw base64 JPEG with no `data:` prefix. Strip any prefix before
+submitting.
 
 With `signing_multikey` on the supported credential, `did` and
 `verification_method` are no longer required here. They remain accepted for the
@@ -300,7 +402,7 @@ GET /oid4vci/credential-offer?exchange_id=9b2f1c74-0f3a-4a9e-9d1c-2a7f6b5e8c10&u
 
 ```json
 {
-  "credential_offer": "openid-credential-offer://?credential_offer=%7B%22credential_issuer%22%3A%22https%3A%2F%2Fissuer.example.gov.on.ca%2Ftenant%2F...%22%2C%22credential_configuration_ids%22%3A%5B%22ExampleIDCard%22%5D%2C%22grants%22%3A%7B%22urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Apre-authorized_code%22%3A%7B%22pre-authorized_code%22%3A%22...%22%7D%7D%7D"
+  "credential_offer": "openid-credential-offer://?credential_offer=%7B%22credential_issuer%22%3A%22https%3A%2F%2Fissuer.example.gov.on.ca%2Ftenant%2F...%22%2C%22credential_configuration_ids%22%3A%5B%22SecurityGuardLicence%22%5D%2C%22grants%22%3A%7B%22urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Apre-authorized_code%22%3A%7B%22pre-authorized_code%22%3A%22...%22%7D%7D%7D"
 }
 ```
 
@@ -363,7 +465,7 @@ Authorization: Bearer <access_token>
 Content-Type: application/json
 
 {
-  "credential_identifier": "ExampleIDCard",
+  "credential_identifier": "SecurityGuardLicence",
   "proof": { "proof_type": "jwt", "jwt": "eyJ0eXAiOiJvcGVuaWQ0dmNpLXByb29mK2p3dCI..." }
 }
 ```
@@ -393,16 +495,27 @@ Decoded payload:
 {
   "_sd": ["8NaEOlLFfJ57NfJJF0nH6zHyylW5al93s6AqNGdEL40", "..."],
   "_sd_alg": "sha-256",
-  "vct": "https://issuer.example.gov.on.ca/credentials/id-card/v1",
+  "vct": "https://issuer.example.gov.on.ca/credentials/security-guard-licence/v1",
   "iss": "https://issuer.example.gov.on.ca",
   "iat": 1790704634,
-  "exp": 1822240634,
+  "exp": 1853776634,
+  "issuing_authority": "Ministry of the Solicitor General, Private Security and Investigative Services Branch",
   "cnf": { "jwk": { "kty": "EC", "crv": "P-256", "x": "...", "y": "..." } }
 }
 ```
 
-`iss` is now an HTTPS URI matching the certificate SAN, not a DID. The
-disclosures follow the JWT, separated by `~`.
+`iss` is now an HTTPS URI matching the certificate SAN, not a DID.
+
+Every claim in `sd_list` has been replaced by a digest in `_sd`;
+`issuing_authority` was not listed, so it stays in the clear. The disclosures
+follow the JWT, separated by `~`:
+
+```
+<issuer-signed-jwt>~<disclosure-given_name>~<disclosure-family_name>~...
+```
+
+Each disclosure is base64url of `[salt, claim_name, claim_value]`. The
+`portrait` disclosure is by far the largest.
 
 ### 6.7 Webhooks (optional)
 
