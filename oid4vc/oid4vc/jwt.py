@@ -165,9 +165,13 @@ async def jwt_sign(
     # x5c (RFC 7517 §4.7) and kid (RFC 7517 §4.5) are mutually exclusive.
     if x5c_chain:
         headers = {**headers, "x5c": x5c_chain}
-    elif "x5c" not in headers and verification_method:
+    elif "x5c" not in headers:
+        if not verification_method:
+            # A bare multikey has no DID URL to use as kid, so without a
+            # certificate the JWT would carry no key identifier and could
+            # never be verified.
+            raise ValueError("multikey signing requires an x5c certificate chain.")
         headers = {**headers, "kid": verification_method}
-    # else: a bare multikey with no certificate carries neither.
     # else: caller already set x5c in headers — leave as-is, omit kid.
 
     async with profile.session() as session:

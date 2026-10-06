@@ -1,0 +1,23 @@
+<div class="w3-container">
+  <p>
+    Before an issuer can sign credentials with an X.509 certificate, its signing
+    key needs a certificate from a CA. Run the steps below in order. The private
+    key is created in the issuer's wallet and never leaves it: the CA only sees a
+    certificate signing request (CSR).
+  </p>
+  <p>
+    When onboarding is complete, issue a credential with
+    <b>Issue Credential &rarr; SD-JWT VC (X.509 certificate)</b>. The credential
+    carries the certificate chain in its <code>x5c</code> header in place of a DID
+    <code>kid</code>.
+  </p>
+</div>
+<%- include('x509/steps') %>
+<div id="navigation" hx-swap-oob="innerhtml">
+  <%- include('navigation.ejs') %>
+</div>
+<div id="content-header" hx-swap-oob="innerhtml">
+  <h1 class="w3-jumbo"><b>OpenID4VCI</b></h1>
+  <h1 class="w3-xxxlarge w3-text-green"><b>X.509 Onboarding</b></h1>
+  <hr style="width:50px;border:5px solid green" class="w3-round">
+</div>

@@ -1,0 +1,114 @@
+<%
+  const json = (value) => JSON.stringify(value, null, 2);
+  const steps = [
+    {
+      title: "Create a signing key",
+      who: "Issuer wallet",
+      call: `POST ${apiBaseUrl}/wallet/keys`,
+      about: "Creates a P-256 key pair in the issuer's wallet. The wallet returns the public key as a multikey; the private key stays inside.",
+    },
+    {
+      title: "Create a certificate signing request (CSR)",
+      who: "Issuer wallet",
+      call: `POST ${apiBaseUrl}/wallet/keys/{multikey}/csr`,
+      about: "The wallet builds a CSR naming the issuer and signs it with the new key. The signature proves to the CA that the requester holds the private key.",
+    },
+    {
+      title: "Sign the CSR with a CA",
+      who: "Certificate authority (local demo CA, openssl)",
+      call: "openssl req -verify  &&  openssl x509 -req -CA ca.pem -CAkey ca.key",
+      about: "The CA checks the CSR signature and issues a leaf certificate. Its subject alternative name carries the issuer URL, which is also the credential's iss. This demo uses a throwaway root CA; in production this step happens at your CA.",
+    },
+    {
+      title: "Import the certificate chain onto the key",
+      who: "Issuer wallet",
+      call: `POST ${apiBaseUrl}/wallet/keys/{multikey}/certificate`,
+      about: "Binds the chain (leaf first, then root) to the key. The wallet rejects a certificate whose public key does not match the key.",
+    },
+  ];
+%>
+<div id="x509-steps" class="w3-container">
+  <% steps.forEach((s, i) => { const n = i + 1; const done = n < step; const current = n === step; %>
+    <div class="w3-card w3-margin-bottom <%= current ? 'w3-leftbar w3-border-green' : '' %>" style="<%= !done && !current ? 'opacity: 0.55;' : '' %>">
+      <header class="w3-container <%= done ? 'w3-pale-green' : (current ? 'w3-light-grey' : '') %>" style="display: flex; align-items: center; gap: 12px; padding: 8px 16px;">
+        <span class="w3-badge <%= done ? 'w3-green' : (current ? 'w3-blue' : 'w3-grey') %>" style="min-width: 28px;"><%= done ? '✓' : n %></span>
+        <h4 style="margin: 0; flex-grow: 1;">Step <%= n %>: <%= s.title %></h4>
+        <span class="w3-small w3-text-grey"><%= s.who %></span>
+      </header>
+      <div class="w3-container" style="padding: 8px 16px;">
+        <p style="margin-top: 0;"><%= s.about %></p>
+        <p class="w3-small"><code><%= s.call %></code></p>
+
+        <% if (current) { %>
+          <button
+              class="w3-button w3-green w3-round"
+              hx-post="/x509/step/<%= n %>"
+              hx-target="#x509-steps"
+              hx-swap="outerHTML"
+              hx-disabled-elt="this"
+              >Run step <%= n %></button>
+        <% } %>
+
+        <% if (x509.error && x509.errorStep === n) { %>
+          <div class="w3-panel w3-pale-red w3-border"><p><b>Step failed:</b> <%= x509.error %></p></div>
+        <% } %>
+
+        <% if (done && n === 1) { %>
+          <p class="w3-small"><b>Request</b></p>
+          <pre class="w3-light-grey w3-small" style="padding: 8px; white-space: pre-wrap;"><%= json(x509.keyRequest) %></pre>
+          <p class="w3-small"><b>Response</b></p>
+          <pre class="w3-light-grey w3-small" style="padding: 8px; white-space: pre-wrap; overflow-wrap: anywhere;"><%= json(x509.keyResponse) %></pre>
+        <% } %>
+
+        <% if (done && n === 2) { %>
+          <p class="w3-small"><b>Issuer identifier</b> (used as the CSR common name, the certificate SAN and the credential <code>iss</code>): <code><%= x509.iss %></code></p>
+          <p class="w3-small"><b>Request</b></p>
+          <pre class="w3-light-grey w3-small" style="padding: 8px; white-space: pre-wrap;"><%= json(x509.csrRequest) %></pre>
+          <p class="w3-small"><b>CSR</b></p>
+          <pre class="w3-light-grey w3-small" style="padding: 8px; white-space: pre-wrap;"><%= x509.csrText %></pre>
+          <details class="w3-small"><summary>PEM</summary><pre class="w3-light-grey" style="padding: 8px;"><%= x509.csrPem %></pre></details>
+        <% } %>
+
+        <% if (done && n === 3) { %>
+          <p class="w3-small"><b>Issued leaf certificate</b></p>
+          <pre class="w3-light-grey w3-small" style="padding: 8px; white-space: pre-wrap;"><%= x509.leafText %></pre>
+          <details class="w3-small"><summary>Leaf PEM</summary><pre class="w3-light-grey" style="padding: 8px;"><%= x509.leafCertPem %></pre></details>
+          <p class="w3-small"><b>Demo root CA</b> (the trust anchor verifiers need)</p>
+          <pre class="w3-light-grey w3-small" style="padding: 8px; white-space: pre-wrap;"><%= x509.caText %></pre>
+          <details class="w3-small"><summary>Root CA PEM</summary><pre class="w3-light-grey" style="padding: 8px;"><%= x509.caCertPem %></pre></details>
+          <p class="w3-small"><a href="/x509/ca.pem" download>Download root CA certificate</a></p>
+        <% } %>
+
+        <% if (done && n === 4) { %>
+          <p class="w3-small"><b>Response</b> (<code>x5c</code> is the chain as it will appear in the credential header)</p>
+          <pre class="w3-light-grey w3-small" style="padding: 8px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow-y: auto;"><%= json({ multikey: x509.importResponse.multikey, x5c: x509.importResponse.x5c }) %></pre>
+          <p class="w3-small"><b>Key record now</b> (<code>GET /wallet/keys/{multikey}</code>): the certificate is stored in the key's metadata.</p>
+          <pre class="w3-light-grey w3-small" style="padding: 8px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow-y: auto;"><%= json(x509.keyRecord) %></pre>
+        <% } %>
+      </div>
+    </div>
+  <% }) %>
+
+  <% if (step === 5) { %>
+    <div class="w3-panel w3-pale-green w3-border w3-round">
+      <h4>Onboarding complete</h4>
+      <p>
+        Key <code style="overflow-wrap: anywhere;"><%= x509.multikey %></code> now has a certificate.
+        Go to <b>Issue Credential</b> and choose <b>SD-JWT VC (X.509 certificate)</b> to issue a
+        credential signed with it.
+      </p>
+    </div>
+  <% } %>
+
+  <% if (step > 1) { %>
+    <p>
+      <button
+          class="w3-button w3-small w3-white w3-border w3-round"
+          hx-post="/x509/reset"
+          hx-target="#x509-steps"
+          hx-swap="outerHTML"
+          hx-confirm="Start over with a new key? Credentials already issued stay valid."
+          >Start over with a new key</button>
+    </p>
+  <% } %>
+</div>

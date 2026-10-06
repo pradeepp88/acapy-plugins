@@ -1,0 +1,59 @@
+## This configuration build for sandbox and development purposes. It is not recommended for production use without further security hardening and configuration adjustments.
+auto-provision: true
+label: oid4vc
+
+no-ledger: true
+
+# Admin
+admin: [ 0.0.0.0, 3001 ]
+admin-insecure-mode: true
+#admin-api-key: change-me
+
+# Transport
+inbound-transport:
+  - [ http, 0.0.0.0, 3000 ]
+
+outbound-transport: http
+# endpoint:
+#   - http://host.docker.internal:3000
+
+# plugins
+plugin:
+  - oid4vc
+  - jwt_vc_json
+  - sd_jwt_vc
+  - mso_mdoc
+  - status_list.v1_0
+
+
+## Multi-tenancy
+multitenant: true
+jwt-secret: insecure
+multitenant-admin: true
+multitenancy-config: '{"wallet_type":"single-wallet-askar","key_derivation_method":"RAW"}'
+
+# Wallet
+wallet-name: issuer
+wallet-type: askar
+wallet-storage-type: postgres_storage
+wallet-key: insecure
+wallet-storage-config: '{"url":"postgres-db:5432"}'
+wallet-storage-creds: '{"account":"postgres","password":"postgres","admin_account":"postgres","admin_password":"postgres"}'
+
+# wallet-name: default
+# wallet-type: askar
+# wallet-storage-type: default
+# wallet-key: "insecure"
+
+log-level: debug
+
+# Connections
+debug-connections: true
+auto-accept-invites: true
+auto-accept-requests: true
+auto-ping-connection: true
+auto-respond-messages: true
+
+## Webhook URL
+webhook-url:
+- http://frontend:3002/webhook

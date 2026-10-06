@@ -1,0 +1,45 @@
+			<% if (x509Step === 5) { %>
+			<div class="w3-panel w3-pale-green w3-leftbar w3-border-green" style="padding: 8px 16px;">
+				<p style="margin: 0 0 6px 0;"><b>Signed with an X.509 certificate instead of a DID</b></p>
+				<p style="margin: 0;">Uses the key from <b>X.509 Onboarding</b>:
+					<code style="overflow-wrap: anywhere;"><%= x509.multikey %></code>.
+					The credential carries its certificate chain in the <code>x5c</code> header in place of a <code>kid</code>,
+					with <code>iss</code> = <code style="overflow-wrap: anywhere;"><%= x509.iss %></code>.</p>
+			</div>
+			<% } else { %>
+			<div class="w3-panel w3-pale-red w3-leftbar w3-border-red" style="padding: 8px 16px;">
+				<p style="margin: 0;"><b>X.509 onboarding is not complete</b> (next step: <%= x509Step %> of 4).
+					Run the steps in the <b>X.509 Onboarding</b> tab first.</p>
+			</div>
+			<% } %>
+			<label
+					class="w3-text-gray"
+					for="fname"
+					>
+				First Name
+			</label>
+			<input
+					class="w3-input w3-animate"
+					name="fname"
+					placeholder="First Name"
+					value="Sally"
+					></input>
+			<label
+					class="w3-text-gray"
+					for="lname"
+					>
+				Last Name
+			</label>
+			<input
+					class="w3-input w3-animate"
+					name="lname"
+					placeholder="Last Name"
+					value="Sparrow"
+					></input>
+<br>
+			<button
+					class="w3-bar w3-btn w3-green"
+					type="submit"
+					>
+				Issue ID Card (X.509)
+			</button>

@@ -11,7 +11,8 @@ from typing import Any, Dict, List, Optional, Union
 from acapy_agent.admin.request_context import AdminRequestContext
 from acapy_agent.core.profile import Profile
 from acapy_agent.wallet.jwt import JWTVerifyResult
-from acapy_agent.wallet.keys.manager import MultikeyManager
+from acapy_agent.wallet.error import WalletError
+from acapy_agent.wallet.keys.manager import MultikeyManager, MultikeyManagerError
 from acapy_agent.wallet.util import bytes_to_b64
 from acapy_agent.wallet.x509 import chain_to_x5c
 from jsonpointer import EndOfList, JsonPointer, JsonPointerException
@@ -144,11 +145,18 @@ class SdJwtCredIssueProcessor(Issuer, CredVerifier, PresVerifier):
         else:
             raise ValueError("Unsupported pop holder value")
 
-        # A signing_key resolves both the key and, if one is bound to it, the
-        # certificate chain. x5c and kid are mutually exclusive (RFC 7515 4.1).
+        # A signing_key resolves both the key and its certificate chain. It must
+        # carry its own chain: falling back to kid or a hand-configured chain
+        # would describe a different key than the signer (RFC 7515 4.1).
         signing_key = supported.signing_key
-        x5c_chain = await _x5c_for_signing_key(context.profile, signing_key)
-        if not x5c_chain:
+        if signing_key:
+            try:
+                x5c_chain = await require_x5c_for_signing_key(
+                    context.profile, signing_key
+                )
+            except ValueError as err:
+                raise CredProcessorError(str(err)) from err
+        else:
             # Legacy passthrough for chains configured by hand.
             x5c_chain = (supported.vc_additional_data or {}).get("x5c_cert_chain")
 
@@ -384,6 +392,24 @@ async def _x5c_for_signing_key(profile: Profile, multikey: Optional[str]):
 
     cert_pem = (key_info.get("metadata") or {}).get("certificate_pem")
     return chain_to_x5c(cert_pem) if cert_pem else None
+
+
+async def require_x5c_for_signing_key(profile: Profile, multikey: str) -> List[str]:
+    """Return the x5c chain bound to `multikey`, or raise ValueError.
+
+    A signing_key is the X.509 path: with no DID to fall back on, the
+    certificate is the only way a verifier can identify the key.
+    """
+    try:
+        x5c = await _x5c_for_signing_key(profile, multikey)
+    except (WalletError, MultikeyManagerError) as err:
+        raise ValueError(f"signing_key {multikey} is not a usable wallet key") from err
+    if not x5c:
+        raise ValueError(
+            f"signing_key {multikey} has no certificate; import one with "
+            "POST /wallet/keys/{multikey}/certificate"
+        )
+    return x5c
 
 
 async def sd_jwt_sign(

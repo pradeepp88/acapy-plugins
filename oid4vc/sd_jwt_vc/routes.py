@@ -24,9 +24,19 @@ from oid4vc.cred_processor import CredProcessors
 
 from oid4vc.models.supported_cred import SupportedCredential, SupportedCredentialSchema
 from oid4vc.utils import supported_cred_is_unique
+from sd_jwt_vc.cred_processor import require_x5c_for_signing_key
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+async def _check_signing_key(profile, body: Dict[str, Any]) -> None:
+    """Reject a signing_key that could not produce a verifiable credential."""
+    if signing_key := body.get("signing_key"):
+        try:
+            await require_x5c_for_signing_key(profile, signing_key)
+        except ValueError as err:
+            raise web.HTTPBadRequest(reason=str(err)) from err
 
 
 class SdJwtSupportedCredCreateReq(OpenAPISchema):
@@ -120,6 +130,27 @@ class SdJwtSupportedCredCreateReq(OpenAPISchema):
             ],
         },
     )
+    signing_key = fields.Str(
+        required=False,
+        metadata={
+            "description": (
+                "Multikey of the wallet key that signs this credential. The key "
+                "must have a certificate bound to it; the chain is embedded as "
+                "the x5c header instead of kid."
+            ),
+            "example": "zDnaeaqzTWBtkgYZFwMCAJQwR7rDVxJmbUJtNhnDD3YG3ysTb",
+        },
+    )
+    iss = fields.Str(
+        required=False,
+        metadata={
+            "description": (
+                "Issuer identifier. Required alongside signing_key. When "
+                "a certificate is used, this must match a SAN in the leaf."
+            ),
+            "example": "https://issuer.example.com",
+        },
+    )
 
 
 @docs(
@@ -180,6 +211,8 @@ async def supported_credential_create(request: web.Request):
     except ValueError as err:
         raise web.HTTPBadRequest(reason=str(err)) from err
 
+    await _check_signing_key(profile, body)
+
     async with profile.session() as session:
         await record.save(session, reason="Save credential supported record.")
 
@@ -218,6 +251,8 @@ async def supported_cred_update_helper(
     sd_list = body.get("sd_list", None)
     record.format_data = {"vct": vct} if vct is not None else {}
     record.vc_additional_data = {"vct": vct, "sd_list": sd_list}
+    record.signing_key = body.get("signing_key", None)
+    record.iss = body.get("iss", None)
 
     await record.save(session)
     return record
@@ -249,6 +284,9 @@ async def update_supported_credential_sd_jwt(request: web.Request):
         supported_cred_id,
         body,
     )
+
+    # The helper saves the record, so check before it runs.
+    await _check_signing_key(context.profile, body)
 
     try:
         async with context.session() as session:

@@ -39,14 +39,24 @@ RUN apt-get update && apt-get install -y curl jq git && apt-get clean
 # released acapy-agent yet. Drop this once it lands and the pyproject pin covers it.
 ARG ACAPY_REPO=https://github.com/pradeepp88/acapy.git
 ARG ACAPY_REF=x-509-support
-RUN pip install --no-cache-dir --no-deps "git+${ACAPY_REPO}@${ACAPY_REF}" \
+# --force-reinstall: the fork shares the released version number, so pip would
+# otherwise treat the PyPI copy installed by poetry as satisfying it.
+RUN python -m pip install --no-cache-dir --no-deps --force-reinstall "git+${ACAPY_REPO}@${ACAPY_REF}" \
     && python -c "import acapy_agent.wallet.x509"
 
 COPY jwt_vc_json/ jwt_vc_json/
 COPY mso_mdoc/ mso_mdoc/
 COPY sd_jwt_vc/ sd_jwt_vc/
 COPY oid4vc/ oid4vc/
-ADD https://github.com/openwallet-foundation/acapy-plugins.git#main:status_list/status_list/ status_list/
+# Sparse clone rather than `ADD <git>#ref:subdir`, which older BuildKit (e.g.
+# Docker 20.10) silently treats as a plain file download.
+ARG STATUS_LIST_REF=main
+RUN git clone --depth 1 --branch "${STATUS_LIST_REF}" --filter=blob:none --sparse \
+        https://github.com/openwallet-foundation/acapy-plugins.git /tmp/acapy-plugins \
+    && git -C /tmp/acapy-plugins sparse-checkout set status_list/status_list \
+    && cp -r /tmp/acapy-plugins/status_list/status_list/. status_list/ \
+    && rm -rf /tmp/acapy-plugins \
+    && python -c "import status_list.v1_0"
 COPY docker/*.yml ./
 
 

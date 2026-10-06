@@ -14,7 +14,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 from oid4vc.jwt import jwt_sign, jwt_verify
-from sd_jwt_vc.cred_processor import _x5c_for_signing_key
+from sd_jwt_vc.cred_processor import _x5c_for_signing_key, require_x5c_for_signing_key
 
 SUBJECT = {"country": "CA", "common_name": "issuer.example.com"}
 _NOT_BEFORE = datetime.datetime(2020, 1, 1)
@@ -122,17 +122,38 @@ async def test_sign_by_multikey_emits_x5c_and_omits_kid(profile_with_cert_key):
 
 
 @pytest.mark.asyncio
-async def test_bare_multikey_emits_no_key_identifier(profile_with_cert_key):
-    """Without a chain there is no kid to emit, and none should be invented."""
+async def test_bare_multikey_without_chain_is_rejected(profile_with_cert_key):
+    """Without a chain there is no kid to emit, so the JWT would be unverifiable."""
     profile, multikey, _ = profile_with_cert_key
-    jws = await jwt_sign(profile, {}, {"hello": "world"}, multikey=multikey)
+    with pytest.raises(ValueError, match="x5c"):
+        await jwt_sign(profile, {}, {"hello": "world"}, multikey=multikey)
 
-    from acapy_agent.wallet.jwt import b64_to_dict
 
-    headers = b64_to_dict(jws.split(".")[0])
-    assert "kid" not in headers
-    assert "x5c" not in headers
-    assert headers["alg"] == "ES256"
+@pytest.mark.asyncio
+async def test_require_x5c_returns_bound_chain(profile_with_cert_key):
+    profile, multikey, _ = profile_with_cert_key
+    assert len(await require_x5c_for_signing_key(profile, multikey)) == 2
+
+
+@pytest.mark.asyncio
+async def test_require_x5c_rejects_key_without_certificate(profile_with_cert_key):
+    profile, _, _ = profile_with_cert_key
+    async with profile.session() as session:
+        bare = await MultikeyManager(session).create(alg="p256", kid="bare")
+    with pytest.raises(ValueError, match="no certificate"):
+        await require_x5c_for_signing_key(profile, bare["multikey"])
+
+
+@pytest.mark.asyncio
+async def test_require_x5c_rejects_unknown_key(profile_with_cert_key):
+    profile, _, _ = profile_with_cert_key
+    # A well-formed multikey whose private key lives in a different wallet.
+    other_profile = await create_test_profile()
+    other_profile.context.injector.bind_instance(KeyTypes, KeyTypes())
+    async with other_profile.session() as session:
+        other = await MultikeyManager(session).create(alg="p256")
+    with pytest.raises(ValueError, match="not a usable wallet key"):
+        await require_x5c_for_signing_key(profile, other["multikey"])
 
 
 @pytest.mark.asyncio

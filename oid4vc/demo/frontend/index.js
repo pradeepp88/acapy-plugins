@@ -7,6 +7,11 @@ import {default as NodeCache } from "node-cache";
 import QRCode from "qrcode-svg";
 
 import path from "node:path";
+import os from "node:os";
+import { randomBytes } from "node:crypto";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { promisify } from "node:util";
 
 import pino from "pino";
 import colada from "pino-colada";
@@ -75,6 +80,8 @@ const API_KEY = process.env.API_KEY;
 const AUTHSERVER_NGROK_URL = process.env.AUTHSERVER_NGROK_URL;
 const ADMIN_MANAGE_AUTH_TOKEN = process.env.ADMIN_MANAGE_AUTH_TOKEN;
 const TENANT_SECRET = process.env.TENANT_SECRET;
+// The issuer's OID4VCI public server, reachable inside the compose network.
+const OID4VCI_INTERNAL_URL = process.env.OID4VCI_INTERNAL_URL || "http://issuer:8082";
 
 //certificate and private key to import for mDL issuance
 //expires 2036, private_key is PEM base64 encoded PKCS #8.
@@ -91,6 +98,8 @@ let sdJwtSupportedCredID = "";
 let mdocSupportedCredID = "";
 let jwtStatusListID = "";
 let sdJwtStatusListID = "";
+let sdJwtX509SupportedCredID = "";
+let sdJwtX509SupportedCredKey = ""; // multikey the X.509 supported credential signs with
 
 
 //    ###     ######     ###            ########  ##    ##
@@ -606,6 +615,313 @@ async function issue_sdjwt_credential(req, res) {
     events.emit(`issuance-${req.body.registrationId}`, {type: "message", message: "Begin listening for credential to be issued."});
   } else {
     events.emit(`issuance-${req.body.registrationId}`, {type: "message", message: "Credential Refresh API call was successful."});
+  }
+}
+
+// X.509 onboarding and SD-JWT VC issuance signed with a certificate (x5c)
+//
+// Instead of a DID, the credential is signed by a bare wallet key that has a
+// certificate bound to it. The certificate chain travels in the JWT's x5c
+// header, so verifiers identify the issuer through PKI rather than DID
+// resolution. The "X.509 Onboarding" tab walks through setting up the key:
+//   1. create a P-256 key in the issuer wallet        POST /wallet/keys
+//   2. have the wallet build a CSR for it             POST /wallet/keys/{multikey}/csr
+//   3. sign the CSR with a CA (here: a local demo CA, using openssl)
+//   4. bind the issued chain to the key               POST /wallet/keys/{multikey}/certificate
+// Issuance then references the key from the supported credential (signing_key + iss).
+
+const execFileAsync = promisify(execFile);
+
+async function openssl(args) {
+  return execFileAsync("openssl", args);
+}
+
+async function withTempDir(fn) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "x509-demo-"));
+  try {
+    return await fn(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+// A throwaway root CA, generated once per demo-app run. In production the CSR
+// goes to a real CA and its root is distributed to verifiers as a trust anchor.
+let demoCa = null;
+async function getDemoCa() {
+  if (demoCa) return demoCa;
+  demoCa = await withTempDir(async (dir) => {
+    const keyFile = path.join(dir, "ca.key");
+    const certFile = path.join(dir, "ca.pem");
+    await openssl(["ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", keyFile]);
+    await openssl([
+      "req", "-x509", "-new", "-key", keyFile, "-sha256", "-days", "3650",
+      "-subj", "/C=CA/O=OID4VC Demo/CN=OID4VC Demo Root CA",
+      "-addext", "basicConstraints=critical,CA:TRUE",
+      "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+      "-addext", "subjectKeyIdentifier=hash",
+      "-out", certFile,
+    ]);
+    return {
+      keyPem: await readFile(keyFile, "utf8"),
+      certPem: await readFile(certFile, "utf8"),
+    };
+  });
+  return demoCa;
+}
+
+// Verify the CSR's proof of possession, then issue a leaf certificate for it.
+// The SAN carries the issuer URL so verifiers can match it against `iss`.
+async function signCsrWithDemoCa(csrPem, issuerUrl) {
+  const ca = await getDemoCa();
+  return withTempDir(async (dir) => {
+    const files = {
+      caKey: path.join(dir, "ca.key"),
+      caCert: path.join(dir, "ca.pem"),
+      csr: path.join(dir, "leaf.csr"),
+      ext: path.join(dir, "leaf.ext"),
+      leaf: path.join(dir, "leaf.pem"),
+    };
+    await writeFile(files.caKey, ca.keyPem);
+    await writeFile(files.caCert, ca.certPem);
+    await writeFile(files.csr, csrPem);
+    await writeFile(files.ext, [
+      "basicConstraints=critical,CA:FALSE",
+      "keyUsage=critical,digitalSignature",
+      `subjectAltName=DNS:${new URL(issuerUrl).hostname},URI:${issuerUrl}`,
+      "subjectKeyIdentifier=hash",
+      "authorityKeyIdentifier=keyid",
+      "",
+    ].join("\n"));
+
+    // Fails if the CSR was not signed by the key it names.
+    await openssl(["req", "-in", files.csr, "-verify", "-noout"]);
+    await openssl([
+      "x509", "-req", "-in", files.csr,
+      "-CA", files.caCert, "-CAkey", files.caKey,
+      // Positive 128-bit serial (leading byte kept below 0x80).
+      "-set_serial", "0x" + (randomBytes(1)[0] & 0x7f).toString(16).padStart(2, "0") + randomBytes(15).toString("hex"),
+      "-days", "365", "-sha256", "-extfile", files.ext, "-out", files.leaf,
+    ]);
+    return readFile(files.leaf, "utf8");
+  });
+}
+
+// Human-readable summary of a CSR or certificate, for display.
+async function describePem(kind, pem) {
+  return withTempDir(async (dir) => {
+    const file = path.join(dir, "in.pem");
+    await writeFile(file, pem);
+    const args = kind === "csr"
+      ? ["req", "-in", file, "-noout", "-subject", "-verify"]
+      : ["x509", "-in", file, "-noout", "-subject", "-issuer", "-serial", "-dates",
+         "-ext", "subjectAltName,keyUsage,basicConstraints"];
+    const { stdout, stderr } = await openssl(args);
+    return (stdout + stderr).trim();
+  });
+}
+
+function tenantHeaders() {
+  const headers = {
+    accept: "application/json",
+    "Content-Type": "application/json",
+    "Authorization": "Bearer " + token.token,
+  };
+  if (API_KEY) {
+    headers["X-API-KEY"] = API_KEY;
+  }
+  return headers;
+}
+
+function newX509State() {
+  return {
+    iss: null,
+    multikey: null,
+    keyRequest: null,
+    keyResponse: null,
+    csrRequest: null,
+    csrPem: null,
+    csrText: null,
+    caCertPem: null,
+    caText: null,
+    leafCertPem: null,
+    leafText: null,
+    importResponse: null,
+    keyRecord: null,
+    error: null,
+    errorStep: null,
+  };
+}
+let x509 = newX509State();
+
+// The next step to run; 5 means onboarding is complete.
+function x509NextStep() {
+  if (!x509.multikey) return 1;
+  if (!x509.csrPem) return 2;
+  if (!x509.leafCertPem) return 3;
+  if (!x509.importResponse) return 4;
+  return 5;
+}
+
+const x509Steps = {
+  // 1. Create a key pair in the issuer's wallet.
+  1: async () => {
+    x509.keyRequest = { alg: "p256" };
+    const response = await axios.post(`${API_BASE_URL}/wallet/keys`, x509.keyRequest, { headers: tenantHeaders() });
+    x509.keyResponse = response.data;
+    x509.multikey = response.data.multikey;
+  },
+
+  // 2. The wallet builds and signs a CSR; the private key never leaves it.
+  2: async () => {
+    // The credential issuer identifier doubles as `iss` and goes in the certificate.
+    const metadataUrl = `${OID4VCI_INTERNAL_URL}/.well-known/openid-credential-issuer/tenant/${WALLET_ID}`;
+    x509.iss = (await axios.get(metadataUrl)).data.credential_issuer;
+    x509.csrRequest = {
+      subject: {
+        country: "CA",
+        organization: "OID4VC Demo Issuer",
+        common_name: new URL(x509.iss).hostname,
+      },
+    };
+    const response = await axios.post(
+      `${API_BASE_URL}/wallet/keys/${x509.multikey}/csr`, x509.csrRequest, { headers: tenantHeaders() }
+    );
+    x509.csrPem = response.data.csr_pem;
+    x509.csrText = await describePem("csr", x509.csrPem);
+  },
+
+  // 3. The CA (a local demo CA here) issues a certificate for the CSR.
+  3: async () => {
+    const ca = await getDemoCa();
+    x509.caCertPem = ca.certPem;
+    x509.caText = await describePem("cert", ca.certPem);
+    x509.leafCertPem = await signCsrWithDemoCa(x509.csrPem, x509.iss);
+    x509.leafText = await describePem("cert", x509.leafCertPem);
+  },
+
+  // 4. Bind the chain (leaf first) to the key; the wallet checks they match.
+  4: async () => {
+    const response = await axios.post(
+      `${API_BASE_URL}/wallet/keys/${x509.multikey}/certificate`,
+      { certificate_pem: x509.leafCertPem + x509.caCertPem },
+      { headers: tenantHeaders() }
+    );
+    x509.importResponse = response.data;
+    x509.keyRecord = (await axios.get(
+      `${API_BASE_URL}/wallet/keys/${x509.multikey}`, { headers: tenantHeaders() }
+    )).data;
+  },
+};
+
+function errorDetail(err) {
+  return String(
+    err?.response?.data ? JSON.stringify(err.response.data) : (err?.stderr || err.message)
+  );
+}
+
+async function issue_sdjwt_x509_credential(req, res) {
+  res.status(200).send("");
+  const registrationId = req.body.registrationId;
+  const emit = (message) => events.emit(`issuance-${registrationId}`, {type: "message", message});
+  const emitDebug = (message, data) => events.emit(`issuance-${registrationId}`, {type: "debug-message", message, data});
+  emit("Received credential data from user. Issuing an SD-JWT VC signed with an X.509 certificate.");
+
+  const { fname: firstName, lname: lastName } = req.body;
+  const headers = tenantHeaders();
+
+  if (x509NextStep() !== 5) {
+    emit(`<span style="color: #c62828;"><b>X.509 onboarding is not complete.</b> Finish the steps in the "X.509 Onboarding" tab first (next step: ${x509NextStep()} of 4).</span>`);
+    return;
+  }
+
+  try {
+    emit(`Signing with X.509 key ${x509.multikey} (iss: ${x509.iss}).`);
+
+    // A new key after an onboarding reset needs its own supported credential.
+    if (sdJwtX509SupportedCredKey !== x509.multikey) {
+      const supportedUrl = `${API_BASE_URL}/oid4vci/credential-supported/create/sd-jwt`;
+      const supportedBody = {
+        format: "vc+sd-jwt",
+        id: `IDCardX509-${x509.multikey.slice(-8)}`,
+        vct: "ExampleIDCard",
+        // signing_key selects the wallet key; its certificate chain becomes the
+        // x5c header. iss is required because there is no DID to derive it from.
+        signing_key: x509.multikey,
+        iss: x509.iss,
+        proof_types_supported: {
+          jwt: { proof_signing_alg_values_supported: ["ES256"] },
+        },
+        cryptographic_binding_methods_supported: ["jwk"],
+        credential_signing_alg_values_supported: ["ES256"],
+        sd_list: [
+          "/given_name",
+          "/family_name",
+          "/age_is_over_18",
+          "/age_is_over_21",
+          "/age_is_over_65",
+        ],
+        credential_metadata: {
+          display: [
+            {
+              name: "ID Card (X.509)",
+              locale: "en-US",
+              background_color: "#0b5d1e",
+              text_color: "#FFFFFF",
+            },
+          ],
+          claims: [
+            { path: ["given_name"], display: [{ name: "Given Name", locale: "en-US" }] },
+            { path: ["family_name"], display: [{ name: "Family Name", locale: "en-US" }] },
+            { path: ["age_is_over_18"], display: [{ name: "Age 18 or Over", locale: "en-US" }] },
+            { path: ["age_is_over_21"], display: [{ name: "Age 21 or Over", locale: "en-US" }] },
+            { path: ["age_is_over_65"], display: [{ name: "Age 65 or Over", locale: "en-US" }] },
+          ],
+        },
+      };
+      emit(`Creating supported credential that signs with the X.509 key: ${supportedUrl}`);
+      emitDebug("Request options", supportedBody);
+      const supported = (await axios.post(supportedUrl, supportedBody, { headers })).data;
+      sdJwtX509SupportedCredID = supported.supported_cred_id;
+      sdJwtX509SupportedCredKey = x509.multikey;
+      emit(`Created supported credential: ${sdJwtX509SupportedCredID}`);
+    }
+
+    // The exchange API still requires a DID; with signing_key set it is not
+    // used for signing, and iss comes from the supported credential.
+    const exchangeBody = {
+      did: issuerDID,
+      supported_cred_id: sdJwtX509SupportedCredID,
+      credential_subject: {
+        given_name: firstName,
+        family_name: lastName,
+        age_is_over_18: true,
+        age_is_over_21: true,
+        age_is_over_65: false,
+      },
+    };
+    const exchangeUrl = `${API_BASE_URL}/oid4vci/exchange/create`;
+    emit(`Posting Credential Exchange Creation Request to: ${exchangeUrl}`);
+    emitDebug("Request options", exchangeBody);
+    const exchangeId = (await axios.post(exchangeUrl, exchangeBody, { headers })).data.exchange_id;
+    emit(`Received Credential Exchange ID: ${exchangeId}`);
+
+    const offerUrl = `${API_BASE_URL}/oid4vci/credential-offer`;
+    emit(`Retrieving Credential Offer from: ${offerUrl}`);
+    const credentialOffer = (await axios.get(offerUrl, {
+      params: { user_pin_required: false, exchange_id: exchangeId },
+      headers,
+    })).data;
+    const qrcode = credentialOffer.credential_offer ?? credentialOffer.credential_offer_uri;
+
+    emit(`Sending offer to user: ${qrcode}`);
+    events.emit(`issuance-${registrationId}`, {type: "qrcode", credentialOffer, exchangeId, qrcode});
+    exchangeCache.set(exchangeId, { exchangeId, credentialOffer, sdJwtX509SupportedCredID, registrationId });
+    emit("Begin listening for credential to be issued. The issued SD-JWT carries an x5c header instead of kid.");
+  } catch (err) {
+    const detail = errorDetail(err).replace(/</g, "&lt;").replace(/\r?\n/g, " ");
+    logger.error(`X.509 SD-JWT issuance failed: ${detail}`);
+    emit(`<span style="color: #c62828;"><b>X.509 issuance failed:</b> ${detail}</span>`);
   }
 }
 
@@ -1327,7 +1643,10 @@ async function initializeAuthServer() {
       `${AUTHSERVER}/admin/tenants`,
       {
         uid: WALLET_ID,
-        name: "tenant1",
+        // Tenant names are unique on the auth server, and each demo-app start
+        // creates a new wallet; naming by wallet ID lets the demo-app restart
+        // without hitting a duplicate name.
+        name: `tenant-${WALLET_ID}`,
         active: true,
         notes: "demo tenant"
       },
@@ -1570,13 +1889,43 @@ app.post("/update-status", async (req, res, next) => {
   }
 });
 
+// X.509 Onboarding routes: each step runs on its own button press and the
+// step list is re-rendered with that step's request and result.
+app.get("/x509", (req, res) => {
+  res.render("x509-onboarding", { page: "x509", x509, step: x509NextStep(), apiBaseUrl: API_BASE_URL });
+});
+app.post("/x509/step/:n", async (req, res) => {
+  const n = parseInt(req.params.n);
+  // Ignore out-of-order presses, e.g. a double click on a finished step.
+  if (n === x509NextStep() && x509Steps[n]) {
+    x509.error = null;
+    x509.errorStep = null;
+    try {
+      await x509Steps[n]();
+    } catch (err) {
+      logger.error(`X.509 onboarding step ${n} failed: ${errorDetail(err)}`);
+      x509.error = errorDetail(err);
+      x509.errorStep = n;
+    }
+  }
+  res.render("x509/steps", { x509, step: x509NextStep(), apiBaseUrl: API_BASE_URL });
+});
+app.post("/x509/reset", (req, res) => {
+  x509 = newX509State();
+  res.render("x509/steps", { x509, step: x509NextStep(), apiBaseUrl: API_BASE_URL });
+});
+app.get("/x509/ca.pem", async (req, res) => {
+  const { certPem } = await getDemoCa();
+  res.type("application/x-pem-file").attachment("oid4vc-demo-root-ca.pem").send(certPem);
+});
+
 // Render Credential Issuance form
 app.get("/issue", (req, res) => {
   res.render("issue-form", {"page": "register", "registrationId": uuidv4()});
 });
 app.get("/issue/select", (req, res) => {
   console.log(req.query);
-  res.render(`issue/${req.query["credential-type"]}`, {"page": "register", "registrationId": uuidv4()});
+  res.render(`issue/${req.query["credential-type"]}`, {"page": "register", "registrationId": uuidv4(), x509, x509Step: x509NextStep()});
 });
 
 app.post("/issue", (req, res, next) => {
@@ -1589,6 +1938,9 @@ app.post("/issue", (req, res, next) => {
         break;
       case "sdjwt":
         issue_sdjwt_credential(req, res).catch(next);
+        break;
+      case "sdjwt-x509":
+        issue_sdjwt_x509_credential(req, res).catch(next);
         break;
       case "mdoc":
         issue_mdoc_credential(req, res).catch(next);

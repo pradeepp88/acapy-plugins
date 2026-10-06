@@ -6,6 +6,9 @@ services:
     # from .. run
     # DOCKER_DEFAULT_PLATFORM=linux/amd64 docker build -f ./docker/Dockerfile --tag oid4vci .
     image: oid4vc
+    # amd64 only: isomdl-uniffi ships no linux/arm64 wheel, so Apple Silicon
+    # runs this under emulation.
+    platform: linux/amd64
     build:
       dockerfile: docker/Dockerfile
       context: ../
@@ -134,7 +137,7 @@ services:
       FORCE_COLOR: 3
       ADMIN_MANAGE_AUTH_TOKEN: $ADMIN_MANAGE_AUTH_TOKEN
       AUTHSERVER_NGROK_URL: $AUTHSERVER_NGROK_URL
-      TENANT_SECRET: tenantsecrettoken #Used by the issuer introspect tokens on auth server.
+      TENANT_SECRET: tenantsecrettoken-demo-only-0123456789 #Used by the issuer introspect tokens on auth server. Min 32 chars (auth server MIN_CLIENT_SECRET_LENGTH).
     depends_on:
       issuer:
         condition: service_healthy

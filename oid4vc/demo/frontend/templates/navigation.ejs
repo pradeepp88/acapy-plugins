@@ -1,4 +1,10 @@
 <button
+		hx-get="/x509"
+		hx-target="#content"
+		hx-swap="innerhtml"
+		class="w3-bar-item w3-button w3-hover-white <%= locals.page=='x509' ? 'w3-pale-green' : '' %>"
+		>X.509 Onboarding</button>
+<button
 		hx-get="/issue"
 		hx-target="#content"
 		hx-swap="innerhtml"
