@@ -9,6 +9,10 @@ Design rationale and the PR breakdown are in [x.509-support.md](x.509-support.md
 Each step is marked **exists** or **proposed**. Proposed endpoints are part of
 the PRs described in the design note.
 
+**The multikey REST API shape below is provisional** and depends on Ivan's
+design for the certificate operations. Paths and payloads may change; the flow
+and the data they carry should not.
+
 Base URLs used below:
 
 | name | value |
@@ -71,17 +75,27 @@ Content-Type: application/json
 }
 ```
 
-The CSR is self-signed through `wallet.sign_message`, which proves possession of
-the private key without exporting it.
+The CSR is signed with the private key it describes, which is how the requestor
+proves control of that key. Here that signature is produced through
+`wallet.sign_message`, so the key never leaves the wallet.
 
 `common_name` should match the host of the `iss` URI you intend to use. The SAN
-is what a verifier checks, and it is added by the CA in the next step.
+is what a verifier checks, and the CA sets it when issuing the certificate.
 
 ---
 
-## Step 3 - Sign the CSR externally (outside ACA-Py)
+## Step 3 - Obtain a certificate from the CA
+
+A CSR is a request for a CA to issue a certificate. The CA does not sign the
+CSR itself: it validates the request, then issues a **new certificate**
+containing the requestor's public key, signed by the CA's key.
+
+This step is always outside ACA-Py, and outside the holder's control by
+definition.
 
 Submit the CSR to your CA. The SAN must cover the issuer URI.
+
+The commands below stand in for the CA, for local testing only.
 
 ```bash
 cat > leaf.ext <<'EOF'
@@ -173,7 +187,7 @@ Content-Type: application/json
   "identifier": "SecurityGuardLicence",
   "vct": "https://issuer.example.gov.on.ca/credentials/security-guard-licence/v1",
 
-  "signing_multikey": "zDnaeaqzTWBtkgYZFwMCAJQwR7rDVxJmbUJtNhnDD3YG3ysTb",
+  "signing_key": "zDnaeaqzTWBtkgYZFwMCAJQwR7rDVxJmbUJtNhnDD3YG3ysTb",
   "iss": "https://issuer.example.gov.on.ca",
 
   "cryptographic_binding_methods_supported": ["jwk"],
@@ -198,9 +212,9 @@ Content-Type: application/json
         "locale": "en-CA",
         "background_color": "#1A1A1A",
         "text_color": "#FFFFFF",
-        "logo": {
-          "uri": "https://issuer.example.gov.on.ca/assets/ontario-logo.png",
-          "alt_text": "Government of Ontario"
+        "background_image": {
+          "uri": "https://issuer.example.gov.on.ca/assets/licence-bg-en.png",
+          "alt_text": "Security guard licence background"
         }
       },
       {
@@ -208,9 +222,9 @@ Content-Type: application/json
         "locale": "fr-CA",
         "background_color": "#1A1A1A",
         "text_color": "#FFFFFF",
-        "logo": {
-          "uri": "https://issuer.example.gov.on.ca/assets/ontario-logo.png",
-          "alt_text": "Gouvernement de l'Ontario"
+        "background_image": {
+          "uri": "https://issuer.example.gov.on.ca/assets/licence-bg-fr.png",
+          "alt_text": "Arriere-plan du permis d'agent de securite"
         }
       }
     ],
@@ -256,13 +270,6 @@ Content-Type: application/json
           { "name": "Photo", "locale": "en-CA" },
           { "name": "Photo", "locale": "fr-CA" }
         ]
-      },
-      {
-        "path": ["issuing_authority"],
-        "display": [
-          { "name": "Issuing Authority", "locale": "en-CA" },
-          { "name": "Autorite de delivrance", "locale": "fr-CA" }
-        ]
       }
     ]
   }
@@ -277,7 +284,7 @@ Notes on the fields that matter for X.509:
 
 | field | why |
 | --- | --- |
-| `signing_multikey` | **new.** Resolves the key *and* its certificate. Replaces the current `vc_additional_data.x5c_cert_chain` lookup. |
+| `signing_key` | **new.** Multikey of the signing key. Resolves the key *and* its certificate. Replaces the current `vc_additional_data.x5c_cert_chain` lookup. |
 | `iss` | **new.** Issuer identity. Must be a URI whose host matches the SAN in the leaf certificate. |
 | `credential_signing_alg_values_supported` | must match the key algorithm - `ES256` for `p256` |
 | `sd_list` | JSON pointers to claims that become selectively disclosable |
@@ -285,6 +292,22 @@ Notes on the fields that matter for X.509:
 
 `cryptographic_binding_methods_supported: ["jwk"]` refers to the **holder** key
 binding, not the issuer. It is unrelated to `x5c`.
+
+### Branding
+
+The `background_image` carries the card artwork, including any issuer logo, so a
+separate `logo` entry is not used. Supply one image per locale when the artwork
+contains text.
+
+### Open question - issuer identification as a claim
+
+An `issuing_authority` claim is deliberately **not** included. The issuer is
+already identified cryptographically by `iss` and the certificate chain, so
+restating it as a claim risks two sources of truth that can disagree.
+
+Whether the authority should appear as a claim at all - and if so whether it
+belongs in the credential, in governance, or in policy - needs discussion before
+it is added.
 
 ### Language handling
 
@@ -368,7 +391,6 @@ Content-Type: application/json
     "licence_number": "11548728",
     "licence_class": "INDIVIDUAL_SECURITY_GUARD",
     "expiry_date": "2028-09-18",
-    "issuing_authority": "Ministry of the Solicitor General, Private Security and Investigative Services Branch",
     "portrait": "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/..."
   }
 }
@@ -388,7 +410,7 @@ credential's own `exp` - those are independent and can legitimately differ.
 `portrait` is raw base64 JPEG with no `data:` prefix. Strip any prefix before
 submitting.
 
-With `signing_multikey` on the supported credential, `did` and
+With `signing_key` on the supported credential, `did` and
 `verification_method` are no longer required here. They remain accepted for the
 `kid` flow.
 
@@ -499,15 +521,13 @@ Decoded payload:
   "iss": "https://issuer.example.gov.on.ca",
   "iat": 1790704634,
   "exp": 1853776634,
-  "issuing_authority": "Ministry of the Solicitor General, Private Security and Investigative Services Branch",
   "cnf": { "jwk": { "kty": "EC", "crv": "P-256", "x": "...", "y": "..." } }
 }
 ```
 
 `iss` is now an HTTPS URI matching the certificate SAN, not a DID.
 
-Every claim in `sd_list` has been replaced by a digest in `_sd`;
-`issuing_authority` was not listed, so it stays in the clear. The disclosures
+Every claim in `sd_list` has been replaced by a digest in `_sd`. The disclosures
 follow the JWT, separated by `~`:
 
 ```
@@ -554,26 +574,21 @@ openssl verify -CAfile root-ca.crt -untrusted intermediate-ca.crt issuer-leaf.cr
 
 ---
 
-## Step 7 - Register trust anchors on verifiers (proposed)
+## Out of scope - verification
 
-```http
-POST /oid4vc/trust-anchors
-Content-Type: application/json
+Verification is **not part of this flow**. The steps above cover issuance only:
+producing a key, obtaining a certificate for it, and issuing credentials whose
+`x5c` header carries that certificate.
 
-{
-  "certificate_pem": "-----BEGIN CERTIFICATE-----\nMIIDxTCC...\n-----END CERTIFICATE-----\n",
-  "purpose": "issuer_ca",
-  "label": "Example Issuing Authority Root CA"
-}
-```
+How verification is handled - trust anchor distribution, chain validation, and
+whether the plugin acts as a verifier at all - is still to be determined. It is
+discussed in section 5 of the design note, but no design is settled and nothing
+here should be read as committing to one.
 
-```json
-{ "trust_anchor_id": "7f3e...", "purpose": "issuer_ca" }
-```
-
-Until this exists, `x5c` verification extracts the public key from the presented
-certificate without validating the chain, which means any self-signed
-certificate is accepted. See section 5 of the design note.
+Worth knowing while that is open: `x5c` verification today extracts the public
+key from the presented certificate without validating the chain, so a
+self-signed certificate is accepted. That affects anyone relying on the plugin
+to verify, not this issuance flow.
 
 ---
 
@@ -586,7 +601,7 @@ certificate is accepted. See section 5 of the design note.
 | 3 | - | external CA | - |
 | 4 | POST | `/wallet/keys/{multikey}/certificate` | proposed |
 | 4 | GET | `/wallet/keys/{multikey}` | exists, extend with metadata |
-| 5 | POST | `/oid4vci/credential-supported/create/sd-jwt` | exists, add `signing_multikey` + `iss` |
+| 5 | POST | `/oid4vci/credential-supported/create/sd-jwt` | exists, add `signing_key` + `iss` |
 | 5 | PUT | `/oid4vci/issuer/configuration` | exists |
 | 6.1 | POST | `/oid4vci/exchange/create` | exists |
 | 6.2 | GET | `/oid4vci/credential-offer` | exists |
@@ -594,7 +609,6 @@ certificate is accepted. See section 5 of the design note.
 | 6.4 | POST | `{subpath}/token` | exists |
 | 6.5 | POST | `{subpath}/nonce` | exists |
 | 6.6 | POST | `{subpath}/credential` | exists |
-| 7 | POST | `/oid4vc/trust-anchors` | proposed |
 
 ---
 
@@ -603,7 +617,7 @@ certificate is accepted. See section 5 of the design note.
 | Symptom | Cause |
 | --- | --- |
 | `certificate SubjectPublicKeyInfo does not match the key` | chain imported onto the wrong multikey |
-| Header still carries `kid` | `signing_multikey` not set on the supported credential, or no certificate imported |
+| Header still carries `kid` | `signing_key` not set on the supported credential, or no certificate imported |
 | Verifier rejects the issuer | `iss` host does not match the certificate SAN |
 | `Unable to determine JWT signing alg` | key algorithm is not `p256` or `ed25519` |
 | Wallet rejects the chain | root not installed as a trust anchor, or intermediates omitted |

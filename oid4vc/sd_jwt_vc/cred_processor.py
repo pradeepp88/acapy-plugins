@@ -11,7 +11,9 @@ from typing import Any, Dict, List, Optional, Union
 from acapy_agent.admin.request_context import AdminRequestContext
 from acapy_agent.core.profile import Profile
 from acapy_agent.wallet.jwt import JWTVerifyResult
+from acapy_agent.wallet.keys.manager import MultikeyManager
 from acapy_agent.wallet.util import bytes_to_b64
+from acapy_agent.wallet.x509 import chain_to_x5c
 from jsonpointer import EndOfList, JsonPointer, JsonPointerException
 from pydid import DIDUrl
 from sd_jwt.issuer import SDJWTIssuer, SDObj
@@ -142,10 +144,14 @@ class SdJwtCredIssueProcessor(Issuer, CredVerifier, PresVerifier):
         else:
             raise ValueError("Unsupported pop holder value")
 
-        # If an x5c cert chain is configured in vc_additional_data, use x5c
-        # as the key-identification header (RFC 7517 §4.7); x5c and kid are
-        # mutually exclusive.
-        x5c_chain = (supported.vc_additional_data or {}).get("x5c_cert_chain")
+        # A signing_key resolves both the key and, if one is bound to it, the
+        # certificate chain. x5c and kid are mutually exclusive (RFC 7515 4.1).
+        signing_key = supported.signing_key
+        x5c_chain = await _x5c_for_signing_key(context.profile, signing_key)
+        if not x5c_chain:
+            # Legacy passthrough for chains configured by hand.
+            x5c_chain = (supported.vc_additional_data or {}).get("x5c_cert_chain")
+
         headers = {
             "typ": supported.format,  # "vc+sd-jwt" or "dc+sd-jwt" per credential config
             **(
@@ -165,7 +171,7 @@ class SdJwtCredIssueProcessor(Issuer, CredVerifier, PresVerifier):
         claims = {
             **claims,
             "vct": vct,
-            "iss": ex_record.issuer_id,
+            "iss": supported.iss or ex_record.issuer_id,
             "iat": current_time,
             "exp": current_time + int(exp_seconds),
         }
@@ -183,7 +189,15 @@ class SdJwtCredIssueProcessor(Issuer, CredVerifier, PresVerifier):
         did = ex_record.issuer_id
         ver_method = ex_record.verification_method
         try:
-            cred = await sd_jwt_sign(sd_list, claims, headers, profile, did, ver_method)
+            cred = await sd_jwt_sign(
+                sd_list,
+                claims,
+                headers,
+                profile,
+                did,
+                ver_method,
+                multikey=signing_key,
+            )
             LOGGER.info("SD JWT VC CREDENTIAL: %s", cred)
             return cred
         except SDJWTError as error:
@@ -321,6 +335,7 @@ class SDJWTIssuerACAPy(SDJWTIssuer):
         verification_method: Optional[str] = None,
         add_decoy_claims: bool = False,
         serialization_format: str = "compact",
+        multikey: Optional[str] = None,
     ):
         """Initialize an SDJWTIssuerACAPy instance."""
         self._user_claims = user_claims
@@ -331,6 +346,7 @@ class SDJWTIssuerACAPy(SDJWTIssuer):
         self.headers = headers
         self.did = did
         self.verification_method = verification_method
+        self.multikey = multikey
 
         self._add_decoy_claims = add_decoy_claims
         self._serialization_format = serialization_format
@@ -343,6 +359,7 @@ class SDJWTIssuerACAPy(SDJWTIssuer):
             self.sd_jwt_payload,
             self.did,
             self.verification_method,
+            multikey=self.multikey,
         )
 
     async def issue(self) -> str:
@@ -357,6 +374,18 @@ class SDJWTIssuerACAPy(SDJWTIssuer):
 Unset = object()
 
 
+async def _x5c_for_signing_key(profile: Profile, multikey: Optional[str]):
+    """Return the x5c chain bound to `multikey`, or None if there is none."""
+    if not multikey:
+        return None
+
+    async with profile.session() as session:
+        key_info = await MultikeyManager(session).from_multikey(multikey)
+
+    cert_pem = (key_info.get("metadata") or {}).get("certificate_pem")
+    return chain_to_x5c(cert_pem) if cert_pem else None
+
+
 async def sd_jwt_sign(
     sd_list: List[str],
     claims: Dict[str, Any],
@@ -364,6 +393,7 @@ async def sd_jwt_sign(
     profile: Profile,
     did: Optional[str] = None,
     verification_method: Optional[str] = None,
+    multikey: Optional[str] = None,
 ):
     """Compose and sign an sd-jwt."""
 
@@ -394,6 +424,7 @@ async def sd_jwt_sign(
         headers=headers,
         did=did,
         verification_method=verification_method,
+        multikey=multikey,
     ).issue()
 
 

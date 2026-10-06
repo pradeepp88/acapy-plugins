@@ -79,6 +79,11 @@ endpoints. Nothing else in approach A works until this is plumbed through.
 
 ### 3.2 PR 1 - ACA-Py core endpoints
 
+**The endpoint shapes below are provisional**, pending Ivan's design for the
+multikey certificate operations. The behaviours they must provide - CSR
+generation from a wallet key, certificate import with SPKI validation, and
+metadata retrieval - are what matter here.
+
 Following the shape of the existing `/wallet/keys` routes:
 
 ```http
@@ -128,7 +133,7 @@ POST /oid4vci/credential-supported/create/sd-jwt
 {
   "format": "vc+sd-jwt",
   "vct": "ExampleIDCard",
-  "signing_multikey": "zDna...",
+  "signing_key": "zDna...",
   "iss": "https://issuer.example.gov.on.ca"
 }
 ```
@@ -161,8 +166,10 @@ POST /wallet/keys/zDna.../csr
 { "subject": { "organization": "Example Issuer", "country": "CA" } }
 ```
 
-**3. Sign the CSR externally.** Out of scope for ACA-Py. Submit to the CA,
-receive the leaf, assemble the chain (leaf first, then intermediates).
+**3. Obtain a certificate from the CA.** Outside ACA-Py. A CSR is a request for
+a CA to issue a certificate: the CA does not sign the CSR, it issues a new
+certificate carrying the requestor's public key, signed by the CA. Assemble the
+chain (leaf first, then intermediates).
 
 **4. Import the chain** back onto the key.
 
@@ -171,7 +178,7 @@ POST /wallet/keys/zDna.../certificate
 { "certificate_pem": "-----BEGIN CERTIFICATE-----..." }
 ```
 
-**5. Reference the key** from the supported credential (`signing_multikey`), and
+**5. Reference the key** from the supported credential (`signing_key`), and
 set `iss` to the URI matching the certificate SAN.
 
 **6. Issue** - unchanged.
@@ -379,7 +386,7 @@ Same distribution pattern, different certificate profile.
 | GET | `/oid4vc/trust-anchors` | list |
 | DELETE | `/oid4vc/trust-anchors/{id}` | remove |
 
-PR 2 (oid4vc issuance) adds no routes - only a `signing_multikey` field on the
+PR 2 (oid4vc issuance) adds no routes - only a `signing_key` field on the
 supported credential.
 
 ---
@@ -398,7 +405,7 @@ supported credential.
 
 | File | Change |
 | --- | --- |
-| `oid4vc/oid4vc/models/supported_cred.py` | add `signing_multikey` |
+| `oid4vc/oid4vc/models/supported_cred.py` | add `signing_key` |
 | `oid4vc/sd_jwt_vc/cred_processor.py` | resolve cert via multikey, derive `x5c` |
 | `oid4vc/mso_mdoc/cred_processor.py` | same mechanism for mdoc |
 

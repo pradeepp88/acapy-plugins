@@ -33,7 +33,15 @@ ARG TARGETARCH
 WORKDIR /usr/src/app
 COPY --from=base /usr/src/app/.venv /usr/src/app/.venv
 ENV PATH="/usr/src/app/.venv/bin:$PATH"
-RUN apt-get update && apt-get install -y curl jq && apt-get clean
+RUN apt-get update && apt-get install -y curl jq git && apt-get clean
+
+# TEMPORARY: the x5c work depends on wallet certificate support that is not in a
+# released acapy-agent yet. Drop this once it lands and the pyproject pin covers it.
+ARG ACAPY_REPO=https://github.com/pradeepp88/acapy.git
+ARG ACAPY_REF=x-509-support
+RUN pip install --no-cache-dir --no-deps "git+${ACAPY_REPO}@${ACAPY_REF}" \
+    && python -c "import acapy_agent.wallet.x509"
+
 COPY jwt_vc_json/ jwt_vc_json/
 COPY mso_mdoc/ mso_mdoc/
 COPY sd_jwt_vc/ sd_jwt_vc/

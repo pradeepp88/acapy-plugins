@@ -17,6 +17,7 @@ from acapy_agent.wallet.jwt import (
 )
 from acapy_agent.wallet.jwt import b64_to_bytes, b64_to_dict
 from acapy_agent.wallet.key_type import ED25519, P256
+from acapy_agent.wallet.keys.manager import multikey_to_verkey
 from acapy_agent.wallet.util import b58_to_bytes, bytes_to_b64
 from aries_askar import Key, KeyAlg
 from cryptography import x509 as cx509
@@ -124,31 +125,36 @@ async def jwt_sign(
     did: Optional[str] = None,
     verification_method: Optional[str] = None,
     x5c_chain: Optional[List[str]] = None,
+    multikey: Optional[str] = None,
 ) -> str:
-    """Create a signed JWT given headers, payload, and signing DID or DID URL.
+    """Create a signed JWT given headers, payload, and a signing key.
 
-    If *x5c_chain* is provided (or ``x5c`` is already present in *headers*)
-    the resulting JWT will carry an ``x5c`` header instead of ``kid``.  The
-    private key used for signing is still resolved from the wallet via
-    *did* / *verification_method* — the cert chain must correspond to that key.
+    The key is located either by *multikey*, or by *did* / *verification_method*.
+    A multikey is the X.509 path: the key is a bare wallet key with no DID, and
+    the certificate identifies it to verifiers.
+
+    If *x5c_chain* is provided (or ``x5c`` is already present in *headers*) the
+    resulting JWT carries an ``x5c`` header instead of ``kid``. The chain must
+    correspond to the signing key.
     """
-    if verification_method is None:
-        if did is None:
-            raise ValueError("did or verificationMethod required.")
+    if multikey is None:
+        if verification_method is None:
+            if did is None:
+                raise ValueError("did, verificationMethod or multikey required.")
 
-        did = nym_to_did(did)
+            did = nym_to_did(did)
 
-        verkey_strat = profile.inject(BaseVerificationKeyStrategy)
-        verification_method = await verkey_strat.get_verification_method_id_for_did(
-            did, profile
-        )
-        if not verification_method:
-            raise ValueError("Could not determine verification method from DID")
-    else:
-        # We look up keys by did for now
-        did = DIDUrl.parse(verification_method).did
-        if not did:
-            raise ValueError("DID URL must be absolute")
+            verkey_strat = profile.inject(BaseVerificationKeyStrategy)
+            verification_method = await verkey_strat.get_verification_method_id_for_did(
+                did, profile
+            )
+            if not verification_method:
+                raise ValueError("Could not determine verification method from DID")
+        else:
+            # We look up keys by did for now
+            did = DIDUrl.parse(verification_method).did
+            if not did:
+                raise ValueError("DID URL must be absolute")
 
     encoded_payload = dict_to_b64(payload)
 
@@ -159,24 +165,32 @@ async def jwt_sign(
     # x5c (RFC 7517 §4.7) and kid (RFC 7517 §4.5) are mutually exclusive.
     if x5c_chain:
         headers = {**headers, "x5c": x5c_chain}
-    elif "x5c" not in headers:
+    elif "x5c" not in headers and verification_method:
         headers = {**headers, "kid": verification_method}
+    # else: a bare multikey with no certificate carries neither.
     # else: caller already set x5c in headers — leave as-is, omit kid.
 
     async with profile.session() as session:
         wallet = session.inject(BaseWallet)
-        did_info = await wallet.get_local_did(did_lookup_name(did))
+        if multikey:
+            key_info = await wallet.get_signing_key(
+                verkey=multikey_to_verkey(multikey)
+            )
+            verkey, key_type = key_info.verkey, key_info.key_type
+        else:
+            did_info = await wallet.get_local_did(did_lookup_name(did))
+            verkey, key_type = did_info.verkey, did_info.key_type
 
-        if did_info.key_type == ED25519:
+        if key_type == ED25519:
             headers["alg"] = "EdDSA"
-        elif did_info.key_type == P256:
+        elif key_type == P256:
             headers["alg"] = "ES256"
         else:
             raise ValueError("Unable to determine JWT signing alg")
 
         encoded_headers = dict_to_b64(headers)
         sig_bytes = await wallet.sign_message(
-            f"{encoded_headers}.{encoded_payload}".encode(), did_info.verkey
+            f"{encoded_headers}.{encoded_payload}".encode(), verkey
         )
 
     sig = bytes_to_b64(sig_bytes, urlsafe=True, pad=False)

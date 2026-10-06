@@ -37,6 +37,8 @@ class SupportedCredential(BaseRecord):
         display: Optional[List[Dict]] = None,  # Deprecated
         format_data: Optional[Dict] = None,  # Deprecated
         vc_additional_data: Optional[Dict] = None,  # Deprecated Non-standard
+        signing_key: Optional[str] = None,
+        iss: Optional[str] = None,
         **kwargs,
     ):
         """Initialize a new SupportedCredential Record.
@@ -66,6 +68,12 @@ class SupportedCredential(BaseRecord):
                 (Deprecated) Format specific attributes.
             vc_additional_data (Optional[Dict]):
                 Additional data to include in the Verifiable Credential.
+            signing_key (Optional[str]):
+                Multikey of the wallet key that signs this credential. When the
+                key carries a certificate, it is embedded as the x5c header.
+            iss (Optional[str]):
+                Issuer identifier. Required with signing_key, where there
+                is no DID to fall back on.
             kwargs:
                 Keyword arguments to allow generic initialization of the record.
         """
@@ -101,6 +109,8 @@ class SupportedCredential(BaseRecord):
         self.display = display  # Deprecated
         self.format_data = format_data  # Deprecated
         self.vc_additional_data = vc_additional_data  # Deprecated Non-standard
+        self.signing_key = signing_key
+        self.iss = iss
 
     @property
     def supported_cred_id(self):
@@ -124,6 +134,8 @@ class SupportedCredential(BaseRecord):
                 "display",  # Deprecated
                 "format_data",  # Deprecated
                 "vc_additional_data",  # Deprecated Non-standard
+                "signing_key",
+                "iss",
             )
         }
 
@@ -302,6 +314,27 @@ class SupportedCredentialSchema(BaseRecordSchema):
         fields.Dict(),
         required=False,
         description="(Deprecated) Use credential_metadata.display",
+    )
+    signing_key = fields.Str(
+        required=False,
+        metadata={
+            "description": (
+                "Multikey of the wallet key that signs this credential. If the "
+                "key has a certificate bound to it, the chain is embedded as "
+                "the x5c header instead of kid."
+            ),
+            "example": "zDnaeaqzTWBtkgYZFwMCAJQwR7rDVxJmbUJtNhnDD3YG3ysTb",
+        },
+    )
+    iss = fields.Str(
+        required=False,
+        metadata={
+            "description": (
+                "Issuer identifier. Required alongside signing_key. When "
+                "a certificate is used, this must match a SAN in the leaf."
+            ),
+            "example": "https://issuer.example.com",
+        },
     )
     format_data = fields.Dict(
         required=False,
