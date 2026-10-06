@@ -2,10 +2,15 @@
 
 Notes gathered while running the kmslite + oid4vc demo (`kmslite/demo`) on the
 `kanon-anoncreds` wallet type with PostgreSQL. Every claim here was verified
-against a live stack or against source in the local ACA-Py checkout; the one
-unresolved item is marked as such.
+against a live stack or against source in the local ACA-Py checkout.
 
 ACA-Py version: 1.6.0 (local checkout, branch `kmslite`).
+
+**Multitenancy stance:** this deployment uses the default `basic` manager, which
+gives each tenant its own database pair. That is what the Kanon documentation's
+own multitenant example uses, and it suits a use case that wants per-tenant
+database separation anyway. `single-wallet-kanon` is undocumented and currently
+non-functional; its defects are recorded in section 7 and do not apply here.
 
 ---
 
@@ -186,10 +191,104 @@ json.decoder.JSONDecodeError: Expecting property name enclosed in double quotes:
 
 ## 6. Multitenancy
 
-Selected with `--multitenancy-config wallet_type=single-wallet-kanon`, handled by
-`SingleWalletKanonMultitenantManager`. All tenants share one pair of databases
-and are separated by Kanon **profiles** - rows in the `profiles` table, with
-`items.profile_id` as the discriminator.
+ACA-Py offers three multitenant managers:
+
+| `multitenant.wallet_type` | manager | tenant isolation |
+| --- | --- | --- |
+| `basic` (default) | `MultitenantManager` | one database pair per tenant |
+| `single-wallet-askar` | `SingleWalletAskarMultitenantManager` | Askar profiles, not Kanon-compatible |
+| `single-wallet-kanon` | `SingleWalletKanonMultitenantManager` | Kanon profiles in one shared store |
+
+**Use `basic`.** It is the default, it is what the Kanon documentation's own
+multitenant example uses, and it is the only mode verified working end to end
+here. `docs/features/KanonStorage.md` shows:
+
+```bash
+--wallet-type kanon-anoncreds \
+--multitenant \
+--multitenant-admin \
+--jwt-secret secret
+```
+
+with no `--multitenancy-config` at all. `single-wallet-kanon` is registered in
+`ProfileManagerProvider.MANAGER_TYPES` but appears nowhere in the Kanon
+documentation, and is non-functional (section 7).
+
+### How `basic` behaves
+
+Each tenant gets its own `wallet_config` call and therefore its own pair of
+databases, named after the tenant's wallet name:
+
+```
+tenant-<uuid>           <- Askar, keys
+tenant-<uuid>_dbstore   <- DBStore, records
+```
+
+`MultitenantManager` is Kanon-aware and returns the right profile class:
+
+```python
+if profile.context.settings.get(WALLET_TYPE_KEY) == "kanon-anoncreds":
+    return KanonAnonCredsProfile(profile.opened, profile.context)
+```
+
+Note it constructs the profile with **no** `profile_id`. Each store has only its
+default profile, so there is no profile-scoping to get wrong - which is exactly
+why the defects in section 7 cannot occur here.
+
+### Creating a tenant
+
+`basic` requires each tenant to supply its own name and key on
+`POST /multitenancy/wallet`:
+
+```json
+{
+  "label": "Alice",
+  "wallet_name": "tenant-<unique>",
+  "wallet_key": "<per-tenant key>",
+  "key_management_mode": "managed"
+}
+```
+
+Omitting `wallet_key` fails at store creation with:
+
+```
+Error opening Askar store. Key derivation password not provided.
+```
+
+Omitting `wallet_name` is worse: it is not rejected, but the tenant store can
+collide with the base agent's own store. Always supply a unique name.
+
+Do **not** send `wallet_type`. The subwallet must match the base wallet, and
+ACA-Py defaults it to the base type:
+
+```python
+sub_wallet_type = body.get("wallet_type", base_wallet_type)
+```
+
+Hardcoding `"askar"` against a `kanon-anoncreds` base wallet is a common demo
+bug and produces confusing downstream failures.
+
+### Operational consequences
+
+- A tenant is a database pair, so tenant count drives database count. Plan for
+  connection-pool sizing accordingly.
+- Reusing a wallet name raises `WalletAlreadyExistsError`. Demos that recreate a
+  tenant on every boot should generate a fresh name, at the cost of accumulating
+  databases.
+- Tenant data is isolated by database, not by a `profile_id` column, so
+  cross-tenant queries are impossible by construction.
+
+---
+
+## 7. `single-wallet-kanon` defects (not used here)
+
+Recorded for completeness and for upstream reporting. **None of this affects a
+`basic` deployment.** All three defects are in
+`SingleWalletKanonMultitenantManager`, which `basic` never loads.
+
+In this mode all tenants share one pair of databases and are separated by Kanon
+**profiles** - rows in the `profiles` table, with `items.profile_id` as the
+discriminator.
 
 ### Bug 1 - wrong sub-wallet type (fixed)
 
@@ -222,10 +321,10 @@ await self._multitenant_profile.opened.db_store.create_profile(wallet_record.wal
 await self._multitenant_profile.opened.askar_store.create_profile(wallet_record.wallet_id)
 ```
 
-### Bug 3 - plugin records escape tenant scoping (UNRESOLVED)
+### Bug 3 - plugin records escape tenant scoping (CONFIRMED, not fixed)
 
-Two related observations, whose causal link is **not** established. See the
-counter-evidence note below before acting on this section.
+Confirmed by experiment: the failure is caused by profile topology, not by the
+status list query. See "Confirming experiment" below.
 
 Observed in a live run:
 
@@ -258,40 +357,84 @@ Ruled out so far:
 - Not caused by the did:key change. The stored definition holds correct
   `issuer_did` and `verification_method` values.
 
-**Important counter-evidence - the profile split may not be the cause.**
+**Important counter-evidence - the mechanism is still not fully explained.**
 `POST /tenant/<id>/credential` and `GET /tenant/<id>/status/0` are served by the
 same middleware in `oid4vci_server.py`, which builds one
 `AdminRequestContext(profile=wallet_profile, root_profile=self.profile)`. The
 credential request returned 200 while reading `oid4vci` and `supported_cred`
-records that are stored under the base profile. If a tenant-profile session
-could not see base-profile rows, issuance would have failed as well.
+records that are stored under the base profile.
 
-So two separate facts are established, and the link between them is not:
+### Located: two sessions per request, the write uses the base one
 
-1. Plugin records are written to the base profile while `did` and `config` are
-   written to the tenant profile. This is real and reproducible.
-2. The shard query returns zero rows. This is real and reproducible.
+Instrumenting `KanonAnonCredsProfileSession.__init__` and
+`PostgresSession._setup_session` shows that a single tenant-authenticated admin
+request opens **both** a tenant-scoped and a base-scoped DBStore session against
+the same multitenant store:
 
-Whether (1) causes (2) is **unproven**. An equally plausible cause for (2) is
-the tag filter itself - `tag_filter = {"list_number": list_number}` where
-`list_number` arrives from the URL as a string, matched against tags stored by
-the status_list plugin.
+```
+PUT /oid4vci/issuer/configuration
+  profile='4b37c2e6-a9e9-4d2d-88af-8b05f1758af4' -> profile_id=3   tenant
+  profile='multitenant_sub_wallet'               -> profile_id=1   base
+```
 
-kmslite's `/kmslite/did/create` writes tenant-scoped, while oid4vc's equally
-tenant-authenticated routes write base-scoped, through what appears to be
-identical `context.profile.session()` code. That asymmetry is also unexplained.
+The resulting `issuer_configuration` row lands under `profile_id=1`, timestamped
+inside that request (`18:06:47.799353`, response logged at `18:06:47,801`), so
+this is not stale data from an earlier run.
 
-Suggested next step: log `profile_id` plus request path in
-`KanonAnonCredsProfileSession.__init__`, and separately log the resolved
-`tag_filter` and row count inside `get_status_list_token`. That distinguishes a
-profile-scoping fault from a query-filter fault.
+What this rules out:
+
+- `SingleWalletKanonMultitenantManager.get_wallet_profile` is correct. It
+  returns `KanonAnonCredsProfile(..., profile_id=wallet_record.wallet_id)`.
+- `DBStore.session(profile)` is correct. The profile propagates through
+  `DBOpenSession._open` to `effective_profile = profile or self.default_profile`.
+- `PostgresSession._get_profile_id` is correct. It resolves the tenant name to
+  the right id (`-> profile_id=3`).
+- The generic handler is correct. Its INSERT uses the `profile_id` it is given.
+
+Every layer honours the profile it receives. The defect is that a base-profile
+session is *created and used at all* for a tenant-scoped write. The remaining
+question is which caller opens a session on the manager's shared
+`_multitenant_profile` rather than on the per-tenant profile returned by
+`get_wallet_profile`.
+
+Why `did` is unaffected: `did` is one of the 20 normalized categories, and that
+write path is tenant-scoped. Every plugin category falls to the generic handler
+and is written through the base-profile session.
+
+### Confirming experiment
+
+Switching only the multitenancy manager, with no code change:
+
+| `multitenant.wallet_type` | store topology | `GET /tenant/<id>/status/0` |
+| --- | --- | --- |
+| `single-wallet-kanon` | one store, many profiles | 500, `IndexError` |
+| `basic` | one store per tenant, single profile | **200** |
+
+The shard query, its tag filter and the stored records are identical in both
+runs. Only the profile topology differs. That isolates the fault to profile
+scoping rather than to the status list query, and confirms `basic` is unaffected.
+
+The remaining unknown is which caller opens a session on the manager's shared
+`_multitenant_profile` rather than on the per-tenant profile returned by
+`get_wallet_profile`. That is where a fix should start.
+
+### If you must run `single-wallet-kanon`
+
+Options, in order of preference:
+
+1. Don't - use `basic`.
+2. Drop `--plugin status_list.v1_0`. `StatusHandler` degrades to a no-op, so
+   credentials are issued without a `status` claim and the endpoint is never
+   called. Loses revocation, and only hides this particular symptom; every other
+   plugin category is still written to the shared base profile.
+3. Single tenant, which removes profiles entirely.
 
 Secondary defect: `shards[0]` should raise a 404, not an `IndexError` surfaced
 as a 500.
 
 ---
 
-## 7. Writing plugins that work on Kanon
+## 8. Writing plugins that work on Kanon
 
 The recurring failure is assuming an Askar session. Two variants were found and
 fixed in this workspace.
@@ -331,7 +474,7 @@ Kanon. Found in `jwt_vc_json/routes.py`, `sd_jwt_vc/routes.py` and
 
 ---
 
-## 8. Operational notes
+## 9. Operational notes
 
 ### Benign log noise at startup
 
@@ -361,12 +504,13 @@ Emitted when a session is held open across a slow operation.
 
 ### Store corruption from interrupted or buggy runs
 
-A healthy Askar store has its own name as the default profile. After a run with
-the Bug 1 / Bug 2 code, the store was left in this state:
+Seen with `single-wallet-kanon` (section 7) but worth knowing generally: a
+healthy Askar store has its own name as the default profile. After a run with
+the section 7 defects, the store was left in this state:
 
 ```
 profiles:         <tenant-uuid>, <tenant-uuid>
-default_profile:  <tenant-uuid>          <- should be multitenant_sub_wallet
+default_profile:  <tenant-uuid>          <- should be the store name
 ```
 
 Opening it then fails with:
@@ -377,7 +521,8 @@ Caused by: no rows returned by a query that expected to return at least one row
 ```
 
 `compose down` does not remove volumes, so a corrupt store survives restarts.
-Recovery is to drop the affected databases and let them be recreated.
+Recovery is to drop the affected databases and let them be recreated. The same
+applies to any half-provisioned store: drop and recreate rather than repair.
 
 ### Keep HSM and database volumes in sync
 
@@ -388,7 +533,11 @@ exists.
 
 ---
 
-## 9. Summary of changes made to core
+## 10. Summary of changes made to core
+
+The chosen configuration (`basic`) needs **no core changes**. Everything below
+fixes `single-wallet-kanon`, which this deployment does not use; the changes are
+kept because they are valid upstream fixes.
 
 | file | change | status |
 | --- | --- | --- |
@@ -399,4 +548,7 @@ exists.
 Test status at time of writing: 68 passed in the ACA-Py multitenant suite, 61
 passed in kmslite.
 
-Bug 3 remains open.
+The plugin-side changes in section 8 **are** required regardless of multitenancy
+mode, since they fix Askar assumptions in plugin code running on Kanon.
+
+Section 7 bug 3 is confirmed but not fixed. It does not affect `basic`.

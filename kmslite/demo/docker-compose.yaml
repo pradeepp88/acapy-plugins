@@ -78,11 +78,13 @@ services:
         --plugin kmslite.v1_0
         --plugin oid4vc
         --plugin jwt_vc_json
+        --plugin status_list.v1_0
         --plugin sd_jwt_vc
         --multitenant
         --multitenant-admin
+        # No --multitenancy-config: the default `basic` manager gives each
+        # tenant its own database pair, matching the Kanon docs example.
         --jwt-secret insecure
-        --multitenancy-config wallet_type=single-wallet-kanon
         -o kmslite.provider=hsm
         -o kmslite.protocol=pkcs11
         -o kmslite.pkcs11.library_path=/opt/bouncyhsm/BouncyHsm.Pkcs11Lib.so

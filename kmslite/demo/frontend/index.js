@@ -1290,6 +1290,10 @@ const fetchApiData = async (url, options) => {
   return await response.json();
 };
 
+// With multitenancy wallet_type=basic each tenant gets its own store, so it
+// needs a unique name and its own key. Both are ignored by single-wallet modes.
+const SUB_WALLET_NAME = `tenant-${uuidv4()}`;
+
 const token = await fetchApiData(
   `${API_BASE_URL}/multitenancy/wallet`,
   {
@@ -1303,10 +1307,17 @@ const token = await fetchApiData(
     body: JSON.stringify(
       {
           "label": "Alice",
+          "wallet_name": SUB_WALLET_NAME,
+          "wallet_key": process.env.SUB_WALLET_KEY || "insecure-demo-subwallet-key",
+          "key_management_mode": "managed",
       }
     )
   }
 );
+
+if (!token.token) {
+  throw new Error(`multitenancy/wallet failed: ${JSON.stringify(token)}`);
+}
 
 console.log("_______TOKEN________\n\n\n");
 console.log(token);
