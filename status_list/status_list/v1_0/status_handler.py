@@ -508,4 +508,5 @@ async def get_status_list_token(
         payload=status_list,
         did=definition.issuer_did,
         verification_method=definition.verification_method,
+        multikey=definition.signing_key,
     )

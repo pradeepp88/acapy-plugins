@@ -15,6 +15,15 @@ from .error import DuplicateListNumberError
 from .feistel import FeistelPermutation
 
 
+SIGNING_KEY_DESCRIPTION = (
+    "Multikey of a wallet key with a certificate bound to it. When set, the "
+    "status list token is signed with this key and carries its certificate "
+    "chain as an x5c header, matching credentials issued with the same "
+    "signing_key; issuer_did then holds the issuer identifier (a URI) used "
+    "as iss. When unset, the token is signed by issuer_did with a kid."
+)
+
+
 class StatusListDef(BaseRecord):
     """Status List Definition."""
 
@@ -46,6 +55,7 @@ class StatusListDef(BaseRecord):
         list_numbers: Optional[List[str]] = None,
         issuer_did: Optional[str] = None,
         verification_method: Optional[str] = None,
+        signing_key: Optional[str] = None,
         **kwargs,
     ) -> None:
         """Initialize a new status list definition instance."""
@@ -66,6 +76,7 @@ class StatusListDef(BaseRecord):
         self.list_numbers = list_numbers
         self.issuer_did = issuer_did
         self.verification_method = verification_method
+        self.signing_key = signing_key
 
         if not self.list_seed:
             self.seed_list()
@@ -108,6 +119,7 @@ class StatusListDef(BaseRecord):
                 "list_numbers",
                 "issuer_did",
                 "verification_method",
+                "signing_key",
             )
         }
 
@@ -243,6 +255,13 @@ class StatusListDefSchema(BaseRecordSchema):
             "example": (
                 "did:web:example.com#z6Mkgg342Ycpuk263R9d8Aq6MUaxPn1DDeHyGo38EefXmgDL"
             ),
+        },
+    )
+    signing_key = fields.Str(
+        required=False,
+        metadata={
+            "description": SIGNING_KEY_DESCRIPTION,
+            "example": "zDnaeaqzTWBtkgYZFwMCAJQwR7rDVxJmbUJtNhnDD3YG3ysTb",
         },
     )
 

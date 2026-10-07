@@ -22,7 +22,14 @@ from marshmallow.validate import OneOf
 
 from ..config import Config
 from ..error import StatusListError
-from ..models import StatusListDef, StatusListDefSchema, StatusListShard, StatusListCred
+from ..jwt import x5c_for_signing_key
+from ..models import (
+    SIGNING_KEY_DESCRIPTION,
+    StatusListCred,
+    StatusListDef,
+    StatusListDefSchema,
+    StatusListShard,
+)
 from .. import status_handler
 
 LOGGER = logging.getLogger(__name__)
@@ -97,6 +104,13 @@ class CreateStatusListDefRequest(OpenAPISchema):
             ),
         },
     )
+    signing_key = fields.Str(
+        required=False,
+        metadata={
+            "description": SIGNING_KEY_DESCRIPTION,
+            "example": "zDnaeaqzTWBtkgYZFwMCAJQwR7rDVxJmbUJtNhnDD3YG3ysTb",
+        },
+    )
 
 
 class CreateStatusListDefResponse(OpenAPISchema):
@@ -147,11 +161,19 @@ async def create_status_list_def(request: web.BaseRequest):
     list_type = body.get("list_type", None)
     issuer_did = body.get("issuer_did", None)
     verification_method = body.get("verification_method", None)
+    signing_key = body.get("signing_key", None)
 
     try:
         context: AdminRequestContext = request["context"]
         config = Config.from_settings(context.profile.settings)
         wallet_id = status_handler.get_wallet_id(context)
+
+        # Fail now rather than when the list is first fetched.
+        if signing_key:
+            try:
+                await x5c_for_signing_key(context.profile, signing_key)
+            except ValueError as err:
+                raise web.HTTPBadRequest(reason=str(err)) from err
 
         # Use config values as defaults when not specified in request body
         if not list_size:
@@ -171,6 +193,7 @@ async def create_status_list_def(request: web.BaseRequest):
                 list_type=list_type,
                 issuer_did=issuer_did,
                 verification_method=verification_method,
+                signing_key=signing_key,
             )
             # Create current status list
             list_number = await status_handler.assign_status_list_number(txn, wallet_id)
@@ -333,6 +356,13 @@ class UpdateStatusListDefRequest(OpenAPISchema):
             ),
         },
     )
+    signing_key = fields.Str(
+        required=False,
+        metadata={
+            "description": SIGNING_KEY_DESCRIPTION,
+            "example": "zDnaeaqzTWBtkgYZFwMCAJQwR7rDVxJmbUJtNhnDD3YG3ysTb",
+        },
+    )
 
 
 @docs(
@@ -358,6 +388,7 @@ async def update_status_list_def(request: web.BaseRequest):
             definition.list_type = body.get("list_type", None)
             definition.issuer_did = body.get("issuer_did", None)
             definition.verification_method = body.get("verification_method", None)
+            definition.signing_key = body.get("signing_key", None)
 
             # Save updated status list definition
             await definition.save(txn, reason="Update status list definition.")
