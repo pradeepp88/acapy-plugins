@@ -89,6 +89,7 @@ async def publish_status_list(request: web.BaseRequest):
                     payload=status_list,
                     did=definition.issuer_did,
                     verification_method=definition.verification_method,
+                    multikey=definition.signing_key,
                 )
                 status_handler.write_to_file(path, jws.encode("utf-8"))
             # add status_list to published list
