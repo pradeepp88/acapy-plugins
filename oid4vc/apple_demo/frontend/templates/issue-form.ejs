@@ -1,0 +1,28 @@
+<div id="registration-form">
+  <form
+      class="w3-container"
+      hx-post="/issue"
+      hx-target="#registration-form"
+      hx-swap="innerhtml"
+      >
+    <div class="w3-container w3-center">
+      <input type="hidden" id="registrationId" name="registrationId" value="<%= registrationId %>">
+      <p class="w3-text-gray">SD-JWT VC</p>
+    </div>
+    <div id="fields">
+      <%- include('issue/sdjwt.ejs') %>
+    </div>
+  </form>
+</div>
+<div hx-ext="sse" sse-connect="/stream/issue/<%= registrationId %>" style="display: flex; max-width: 100%; flex-direction: column;">
+  <div sse-swap="qrcode" style="align-self: center; padding-bottom: 15px;"></div>
+</div>
+<div id="navigation" hx-swap-oob="innerhtml">
+  <%- include('navigation.ejs') %>
+</div>
+<div id="content-header" hx-swap-oob="innerhtml">
+  <h1 class="w3-jumbo"><b>Ontario Wallet Sandbox</b></h1>
+  <h1 class="w3-xxxlarge w3-text-green"><b>Issue Credential</b></h1>
+  <hr style="width:50px;border:5px solid green" class="w3-round">
+</div>
+

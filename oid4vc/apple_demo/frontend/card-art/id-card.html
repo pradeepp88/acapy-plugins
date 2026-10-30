@@ -1,0 +1,65 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; }
+  body { width: 1012px; height: 638px; overflow: hidden; font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; }
+  .card {
+    position: relative; width: 1012px; height: 638px; overflow: hidden; color: #fff;
+    background: linear-gradient(160deg, #0B3D5C 0%, #11577A 38%, #1C7A86 70%, #2E8F7E 100%);
+  }
+  .sun { position: absolute; right: 150px; top: 120px; width: 210px; height: 210px; border-radius: 50%;
+         background: radial-gradient(circle, rgba(255,214,140,0.95) 0, rgba(255,190,110,0.55) 45%, rgba(255,190,110,0) 70%); }
+  .scene { position: absolute; left: 0; bottom: 0; width: 1012px; height: 638px; }
+  .title { position: absolute; left: 64px; top: 64px; }
+  .title .en { font-size: 58px; font-weight: 700; letter-spacing: 0.5px; }
+  .title .sub { font-size: 30px; font-weight: 400; margin-top: 12px; color: #D7EEF0; letter-spacing: 1px; }
+  .rule { position: absolute; left: 64px; top: 196px; width: 120px; height: 6px; background: #FFD68C; border-radius: 3px; }
+  .chip { position: absolute; left: 64px; top: 250px; width: 96px; height: 72px; border-radius: 12px;
+          background: linear-gradient(135deg, #F3D9A0 0%, #D9B66A 50%, #F0D49A 100%); opacity: 0.92; }
+  .chip:before, .chip:after { content: ""; position: absolute; background: rgba(120,90,30,0.45); }
+  .chip:before { left: 0; right: 0; top: 35px; height: 2px; }
+  .chip:after { top: 0; bottom: 0; left: 47px; width: 2px; }
+  .band { position: absolute; left: 0; right: 0; bottom: 0; height: 118px; background: rgba(6,40,52,0.62);
+          border-top: 3px solid #FFD68C; }
+  .band .l { position: absolute; left: 64px; top: 38px; font-size: 28px; color: #D7EEF0; letter-spacing: 0.5px; }
+  .band .r { position: absolute; right: 64px; top: 30px; font-size: 26px; font-weight: 700; letter-spacing: 4px;
+             padding: 8px 18px; border: 2px solid #FFD68C; border-radius: 10px; color: #FFD68C; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="sun"></div>
+
+  <!-- Lake, far hills and a pine treeline -->
+  <svg class="scene" viewBox="0 0 1012 638" preserveAspectRatio="none">
+    <path d="M0 430 C 160 380, 300 410, 450 385 S 760 360, 1012 395 V 638 H 0 Z" fill="#0E4A63" opacity="0.55"/>
+    <path d="M0 470 H 1012 V 638 H 0 Z" fill="#0A3A50" opacity="0.55"/>
+    <g fill="none" stroke="#D7EEF0" stroke-width="2" opacity="0.28">
+      <path d="M540 488 H 700"/><path d="M600 500 H 760"/><path d="M640 512 H 720"/>
+    </g>
+    <g fill="#08323F">
+      <path d="M430 470 L 452 410 L 446 410 L 464 372 L 458 372 L 474 338 L 490 372 L 484 372 L 502 410 L 496 410 L 518 470 Z"/>
+      <path d="M500 470 L 516 428 L 511 428 L 524 400 L 519 400 L 531 376 L 543 400 L 538 400 L 551 428 L 546 428 L 562 470 Z"/>
+      <path d="M760 470 L 786 398 L 779 398 L 800 352 L 793 352 L 812 312 L 831 352 L 824 352 L 845 398 L 838 398 L 864 470 Z"/>
+      <path d="M850 470 L 868 420 L 863 420 L 878 388 L 873 388 L 886 362 L 899 388 L 894 388 L 909 420 L 904 420 L 922 470 Z"/>
+      <path d="M910 470 L 932 410 L 926 410 L 944 372 L 938 372 L 954 340 L 970 372 L 964 372 L 982 410 L 976 410 L 998 470 Z"/>
+      <path d="M0 470 H 1012 V 476 H 0 Z"/>
+    </g>
+  </svg>
+
+  <div class="title">
+    <div class="en">Identity Card</div>
+    <div class="sub">Ontario Wallet Sandbox</div>
+  </div>
+  <div class="rule"></div>
+  <div class="chip"></div>
+
+  <div class="band">
+    <div class="l">SD-JWT verifiable credential</div>
+    <div class="r">SANDBOX</div>
+  </div>
+</div>
+</body>
+</html>
