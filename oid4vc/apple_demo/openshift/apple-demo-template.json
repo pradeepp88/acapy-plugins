@@ -1,0 +1,710 @@
+{
+  "apiVersion": "template.openshift.io/v1",
+  "kind": "Template",
+  "metadata": {
+    "name": "apple-demo",
+    "annotations": {
+      "description": "Ontario Wallet Sandbox (oid4vc/apple_demo): SD-JWT VC issuance demo. Issuer, auth server, frontend and Postgres with a volume. Builds take local uploads (oc start-build --from-dir); see oid4vc/apple_demo/openshift/README.md.",
+      "openshift.io/display-name": "Ontario Wallet Sandbox (apple_demo)"
+    }
+  },
+  "message": "Create the apple-demo-tokens and frontend-portal-auth Secrets, then run the three binary builds. deploy.sh does both.",
+  "parameters": [
+    {
+      "name": "FRONTEND_HOST",
+      "required": true,
+      "description": "Route host for the demo frontend"
+    },
+    {
+      "name": "ISSUER_HOST",
+      "required": true,
+      "description": "Route host for the issuer's OID4VCI endpoint (port 8082)"
+    },
+    {
+      "name": "AUTH_SERVER_HOST",
+      "required": true,
+      "description": "Route host for the auth server tenant API (port 9001)"
+    }
+  ],
+  "objects": [
+    {
+      "apiVersion": "image.openshift.io/v1",
+      "kind": "ImageStream",
+      "metadata": {
+        "name": "issuing-service"
+      }
+    },
+    {
+      "apiVersion": "build.openshift.io/v1",
+      "kind": "BuildConfig",
+      "metadata": {
+        "name": "issuing-service-build"
+      },
+      "spec": {
+        "failedBuildsHistoryLimit": 1,
+        "output": {
+          "to": {
+            "kind": "ImageStreamTag",
+            "name": "issuing-service:latest"
+          }
+        },
+        "resources": {
+          "limits": {
+            "cpu": 1,
+            "memory": "4Gi"
+          },
+          "requests": {
+            "cpu": "500m",
+            "memory": "2G"
+          }
+        },
+        "source": {
+          "type": "Binary"
+        },
+        "strategy": {
+          "dockerStrategy": {
+            "dockerfilePath": "docker/Dockerfile.oid4vc.openshift"
+          },
+          "type": "Docker"
+        },
+        "triggers": []
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "data": {
+        "OID4VCI_ENDPOINT": "https://${ISSUER_HOST}",
+        "OID4VCI_HOST": "0.0.0.0",
+        "OID4VCI_PORT": "8082",
+        "OID4VCI_STATUS_HANDLER": "status_list.v1_0.status_handler",
+        "RUST_LOG": "warn",
+        "STATUS_LIST_FILE_PATH": "/tmp/bitstring/{tenant_id}/{list_number}",
+        "STATUS_LIST_PUBLIC_URI": "https://${ISSUER_HOST}/tenant/{tenant_id}/status/{list_number}",
+        "STATUS_LIST_SHARD_SIZE": "131072",
+        "STATUS_LIST_SIZE": "131072",
+        "WALLET_NAME": "ods_base_wallet",
+        "WALLET_STORAGE_CONFIG": "{\"url\":\"postgres-db:5432\"}",
+        "WALLET_STORAGE_CREDS": "{\"account\":\"postgres\",\"password\":\"postgres\",\"admin_account\":\"postgres\",\"admin_password\":\"postgres\"}",
+        "WALLET_STORAGE_TYPE": "postgres_storage"
+      },
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "issuing-service"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "annotations": {
+          "image.openshift.io/triggers": "[{\n  \"from\": {\n    \"kind\": \"ImageStreamTag\",\n    \"name\": \"issuing-service:latest\"\n  },\n  \"fieldPath\": \"spec.template.spec.containers[0].image\"\n}]\n"
+        },
+        "name": "issuing-service"
+      },
+      "spec": {
+        "replicas": 1,
+        "selector": {
+          "matchLabels": {
+            "app": "issuing-service"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "issuing-service"
+            }
+          },
+          "spec": {
+            "containers": [
+              {
+                "args": [
+                  "start",
+                  "--arg-file",
+                  "/usr/src/app/default_openshift.yml"
+                ],
+                "command": [
+                  "aca-py"
+                ],
+                "env": [],
+                "envFrom": [
+                  {
+                    "configMapRef": {
+                      "name": "issuing-service"
+                    }
+                  }
+                ],
+                "image": "issuing-service:latest",
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/status/live",
+                    "port": 3001
+                  },
+                  "initialDelaySeconds": 30
+                },
+                "name": "issuing-service",
+                "ports": [
+                  {
+                    "containerPort": 3001
+                  },
+                  {
+                    "containerPort": 8082
+                  }
+                ],
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/status/ready",
+                    "port": 3001
+                  },
+                  "initialDelaySeconds": 30
+                },
+                "securityContext": {
+                  "runAsGroup": 1001,
+                  "runAsUser": 1001
+                }
+              }
+            ],
+            "serviceAccount": "deployer"
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "issuing-service"
+      },
+      "spec": {
+        "ports": [
+          {
+            "name": "admin",
+            "port": 3001,
+            "protocol": "TCP",
+            "targetPort": 3001
+          },
+          {
+            "name": "oid4vci",
+            "port": 8082,
+            "protocol": "TCP",
+            "targetPort": 8082
+          }
+        ],
+        "selector": {
+          "app": "issuing-service"
+        }
+      }
+    },
+    {
+      "apiVersion": "route.openshift.io/v1",
+      "kind": "Route",
+      "metadata": {
+        "name": "issuing-service-oid4vc"
+      },
+      "spec": {
+        "host": "${ISSUER_HOST}",
+        "port": {
+          "targetPort": "oid4vci"
+        },
+        "tls": {
+          "termination": "edge"
+        },
+        "to": {
+          "kind": "Service",
+          "name": "issuing-service",
+          "weight": 100
+        },
+        "wildcardPolicy": "None"
+      }
+    },
+    {
+      "apiVersion": "image.openshift.io/v1",
+      "kind": "ImageStream",
+      "metadata": {
+        "name": "frontend"
+      }
+    },
+    {
+      "apiVersion": "build.openshift.io/v1",
+      "kind": "BuildConfig",
+      "metadata": {
+        "name": "frontend-build"
+      },
+      "spec": {
+        "failedBuildsHistoryLimit": 1,
+        "output": {
+          "to": {
+            "kind": "ImageStreamTag",
+            "name": "frontend:latest"
+          }
+        },
+        "source": {
+          "type": "Binary"
+        },
+        "strategy": {
+          "dockerStrategy": {
+            "dockerfilePath": "Dockerfile"
+          },
+          "type": "Docker"
+        },
+        "triggers": []
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "data": {
+        "API_BASE_URL": "http://issuing-service:3001",
+        "AUTHSERVER_NGROK_URL": "https://${AUTH_SERVER_HOST}",
+        "FORCE_COLOR": "3",
+        "NODE_ENV": "development",
+        "WDS_SOCKET_PORT": "0"
+      },
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "frontend"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "annotations": {
+          "image.openshift.io/triggers": "[{\n  \"from\": {\n    \"kind\": \"ImageStreamTag\",\n    \"name\": \"frontend:latest\"\n  },\n  \"fieldPath\": \"spec.template.spec.containers[0].image\"\n}]\n"
+        },
+        "name": "frontend"
+      },
+      "spec": {
+        "replicas": 1,
+        "selector": {
+          "matchLabels": {
+            "app": "frontend"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "frontend"
+            }
+          },
+          "spec": {
+            "containers": [
+              {
+                "command": [
+                  "/bin/sh",
+                  "-c",
+                  "npm start"
+                ],
+                "envFrom": [
+                  {
+                    "configMapRef": {
+                      "name": "frontend"
+                    }
+                  },
+                  {
+                    "secretRef": {
+                      "name": "apple-demo-tokens"
+                    }
+                  },
+                  {
+                    "secretRef": {
+                      "name": "frontend-portal-auth"
+                    }
+                  }
+                ],
+                "image": "frontend:latest",
+                "name": "frontend",
+                "ports": [
+                  {
+                    "containerPort": 3000
+                  }
+                ],
+                "resources": {
+                  "limits": {
+                    "cpu": "256m",
+                    "memory": "256Mi"
+                  },
+                  "requests": {
+                    "cpu": "50m",
+                    "memory": "256Mi"
+                  }
+                }
+              }
+            ],
+            "initContainers": [
+              {
+                "command": [
+                  "sh",
+                  "-c",
+                  "until nc -z issuing-service 3001; do echo waiting for issuing-service; sleep 3; done;"
+                ],
+                "image": "busybox",
+                "name": "wait-for-issuing-service"
+              }
+            ],
+            "serviceAccount": "deployer"
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "frontend"
+      },
+      "spec": {
+        "ports": [
+          {
+            "name": "http",
+            "port": 3002,
+            "protocol": "TCP",
+            "targetPort": 3000
+          }
+        ],
+        "selector": {
+          "app": "frontend"
+        }
+      }
+    },
+    {
+      "apiVersion": "route.openshift.io/v1",
+      "kind": "Route",
+      "metadata": {
+        "name": "frontend",
+        "annotations": {
+          "haproxy.router.openshift.io/timeout": "10m"
+        }
+      },
+      "spec": {
+        "host": "${FRONTEND_HOST}",
+        "port": {
+          "targetPort": "http"
+        },
+        "tls": {
+          "termination": "edge"
+        },
+        "to": {
+          "kind": "Service",
+          "name": "frontend",
+          "weight": 100
+        },
+        "wildcardPolicy": "None"
+      }
+    },
+    {
+      "apiVersion": "image.openshift.io/v1",
+      "kind": "ImageStream",
+      "metadata": {
+        "name": "auth-server"
+      }
+    },
+    {
+      "apiVersion": "build.openshift.io/v1",
+      "kind": "BuildConfig",
+      "metadata": {
+        "name": "auth-server-build"
+      },
+      "spec": {
+        "failedBuildsHistoryLimit": 1,
+        "output": {
+          "to": {
+            "kind": "ImageStreamTag",
+            "name": "auth-server:latest"
+          }
+        },
+        "source": {
+          "type": "Binary"
+        },
+        "strategy": {
+          "dockerStrategy": {
+            "dockerfilePath": "docker/Dockerfile.authserver.openshift"
+          },
+          "type": "Docker"
+        },
+        "triggers": []
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "data": {
+        "ADMIN_APP_ROOT_PATH": "",
+        "ADMIN_APP_TITLE": "OAuth 2.0 Authorization Server Admin API",
+        "ADMIN_APP_VERSION": "0.2.0",
+        "ADMIN_DB_HOST": "postgres-db",
+        "ADMIN_DB_NAME": "auth_server_admin",
+        "ADMIN_DB_PASSWORD": "postgres",
+        "ADMIN_DB_PORT": "5432",
+        "ADMIN_DB_SCHEMA": "admin",
+        "ADMIN_DB_USER": "postgres",
+        "ADMIN_OPENAPI_URL": "/openapi.json",
+        "ADMIN_TENANT_DB_NAME": "auth_server_tenant",
+        "ADMIN_TENANT_DB_SCHEMA": "auth",
+        "TENANT_APP_ROOT_PATH": "",
+        "TENANT_DB_HOST": "postgres-db",
+        "TENANT_DB_PORT": "5432",
+        "TENANT_INCLUDE_NONCE": "false",
+        "TENANT_INTERNAL_BASE_URL": "http://auth-server:9000/internal",
+        "TENANT_ISSUER_BASE_URL": "https://${AUTH_SERVER_HOST}",
+        "TENANT_OPENAPI_URL": "/openapi.json",
+        "TENANT_PROXY_TRUSTED_HOSTS": "[\"*\"]"
+      },
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "auth-server"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "annotations": {
+          "image.openshift.io/triggers": "[{\n  \"from\": {\n    \"kind\": \"ImageStreamTag\",\n    \"name\": \"auth-server:latest\"\n  },\n  \"fieldPath\": \"spec.template.spec.containers[0].image\"\n}]\n"
+        },
+        "name": "auth-server"
+      },
+      "spec": {
+        "replicas": 1,
+        "selector": {
+          "matchLabels": {
+            "app": "auth-server"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "auth-server"
+            }
+          },
+          "spec": {
+            "containers": [
+              {
+                "envFrom": [
+                  {
+                    "configMapRef": {
+                      "name": "auth-server"
+                    }
+                  },
+                  {
+                    "secretRef": {
+                      "name": "apple-demo-tokens"
+                    }
+                  }
+                ],
+                "image": "auth-server:latest",
+                "name": "auth-server",
+                "ports": [
+                  {
+                    "containerPort": 9000
+                  },
+                  {
+                    "containerPort": 9001
+                  }
+                ],
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/healthz",
+                    "port": 9000
+                  }
+                },
+                "resources": {
+                  "limits": {
+                    "cpu": "256m",
+                    "memory": "512Mi"
+                  },
+                  "requests": {
+                    "cpu": "100m",
+                    "memory": "256Mi"
+                  }
+                }
+              }
+            ],
+            "securityContext": {
+              "runAsGroup": 0,
+              "runAsUser": 1001
+            },
+            "serviceAccountName": "deployer"
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "auth-server"
+      },
+      "spec": {
+        "ports": [
+          {
+            "name": "admin",
+            "port": 9000,
+            "protocol": "TCP",
+            "targetPort": 9000
+          },
+          {
+            "name": "tenant",
+            "port": 9001,
+            "protocol": "TCP",
+            "targetPort": 9001
+          }
+        ],
+        "selector": {
+          "app": "auth-server"
+        }
+      }
+    },
+    {
+      "apiVersion": "route.openshift.io/v1",
+      "kind": "Route",
+      "metadata": {
+        "name": "auth-server-tenant"
+      },
+      "spec": {
+        "host": "${AUTH_SERVER_HOST}",
+        "port": {
+          "targetPort": "tenant"
+        },
+        "tls": {
+          "termination": "edge"
+        },
+        "to": {
+          "kind": "Service",
+          "name": "auth-server",
+          "weight": 100
+        },
+        "wildcardPolicy": "None"
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "data": {
+        "POSTGRES_DB": "postgres",
+        "POSTGRES_PASSWORD": "postgres",
+        "POSTGRES_USER": "postgres"
+      },
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "postgres-db"
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "postgres-db"
+      },
+      "spec": {
+        "ports": [
+          {
+            "name": "postgres-db",
+            "port": 5432,
+            "protocol": "TCP",
+            "targetPort": 5432
+          }
+        ],
+        "selector": {
+          "app": "postgres-db"
+        }
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "postgres-db"
+      },
+      "spec": {
+        "replicas": 1,
+        "selector": {
+          "matchLabels": {
+            "app": "postgres-db"
+          }
+        },
+        "strategy": {
+          "type": "Recreate"
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "postgres-db"
+            }
+          },
+          "spec": {
+            "containers": [
+              {
+                "envFrom": [
+                  {
+                    "configMapRef": {
+                      "name": "postgres-db"
+                    }
+                  }
+                ],
+                "image": "postgres:15",
+                "name": "postgres-db",
+                "ports": [
+                  {
+                    "containerPort": 5432,
+                    "name": "postgres"
+                  }
+                ],
+                "resources": {
+                  "limits": {
+                    "cpu": "256m",
+                    "memory": "256Mi"
+                  },
+                  "requests": {
+                    "cpu": "50m",
+                    "memory": "256Mi"
+                  }
+                },
+                "volumeMounts": [
+                  {
+                    "name": "pgdata",
+                    "mountPath": "/var/lib/postgresql/data"
+                  }
+                ],
+                "env": [
+                  {
+                    "name": "PGDATA",
+                    "value": "/var/lib/postgresql/data/pgdata"
+                  }
+                ]
+              }
+            ],
+            "securityContext": {
+              "fsGroup": 999,
+              "runAsGroup": 999,
+              "runAsUser": 999
+            },
+            "serviceAccountName": "deployer",
+            "volumes": [
+              {
+                "name": "pgdata",
+                "persistentVolumeClaim": {
+                  "claimName": "postgres-data"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "PersistentVolumeClaim",
+      "metadata": {
+        "name": "postgres-data"
+      },
+      "spec": {
+        "accessModes": [
+          "ReadWriteOnce"
+        ],
+        "storageClassName": "managed-premium",
+        "resources": {
+          "requests": {
+            "storage": "1Gi"
+          }
+        }
+      }
+    }
+  ]
+}

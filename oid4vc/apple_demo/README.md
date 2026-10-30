@@ -55,40 +55,11 @@ removes the Postgres volume.
 
 ## OpenShift (`qa-sandbox`)
 
-Build from GitHub with the `ecp-issuing-service` template, as in
-[`../openshift-changes/openshift-developer-guide.md`](../openshift-changes/openshift-developer-guide.md),
-with the frontend build's context directory set to `oid4vc/apple_demo/frontend`.
-
-The frontend calls the auth server at `http://auth-server:9000` (admin) and
-`http://auth-server:9001` (tenant), so the auth server Service must be named
-`auth-server`. The issuer sends webhooks to the URL in
-`docker/default_openshift.yml` (`http://frontend:3002/webhook`); check it
-matches the frontend Service.
-
-**Environment.** There is no ngrok, so set the public URLs from the routes:
-
-| Pod | Variable | Value |
-|---|---|---|
-| issuer | `OID4VCI_ENDPOINT` | `https://<issuer route>` |
-| issuer | `STATUS_LIST_PUBLIC_URI` | `https://<issuer route>/tenant/{tenant_id}/status/{list_number}` |
-| auth server | `TENANT_ISSUER_BASE_URL` | `https://<auth server route>` |
-| frontend | `AUTHSERVER_NGROK_URL` | `https://<auth server route>` |
-| frontend | `API_BASE_URL` | `http://<issuer service>:3001` |
-
-**Secrets.** Create them in the namespace and load them with
-`oc set env --from=secret/...`; never as plain env values:
+See [`openshift/README.md`](openshift/README.md): a template and a
+`deploy.sh` that set up the demo in a namespace and build the images from this
+checkout.
 
 ```bash
-oc -n qa-sandbox create secret generic frontend-portal-auth --from-literal=PASSWORD=...
-oc -n qa-sandbox set env deploy/frontend --from=secret/frontend-portal-auth --prefix=DEMO_PORTAL_
+oc login ...
+./openshift/deploy.sh qa-sandbox
 ```
-
-Use new values for `ADMIN_MANAGE_AUTH_TOKEN`, `ADMIN_INTERNAL_AUTH_TOKEN`,
-`TENANT_INTERNAL_AUTH_TOKEN` (same as the internal token) and `TENANT_SECRET`.
-
-**Routes.** Edge TLS routes only for the frontend (3000), the issuer's OID4VCI
-port (8082) and the auth server tenant port (9001). No routes for the issuer
-admin port (3001, insecure mode) or the auth server admin port (9000).
-
-**Volume.** Give Postgres a PersistentVolumeClaim mounted at
-`/var/lib/postgresql/data`.
